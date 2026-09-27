@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue';
 import Icon from './Icons.vue';
-import BrandMark from './BrandMark.vue';
 import PomodoroPopover from './PomodoroPopover.vue';
 import { useTabsStore } from '../stores/tabs';
 import { useSettingsStore } from '../stores/settings';
@@ -679,8 +678,6 @@ onBeforeUnmount(() => {
     @wheel="onToolbarWheel"
     @click="onToolbarActivate"
   >
-    <BrandMark class="toolbar__brand" :size="22" />
-
     <!-- Windows unified title bar: in-app File/Edit/View/Help menubar
          (replaces the removed native menu bar row). -->
     <nav v-if="winTitleBar" class="menubar" data-no-drag>
@@ -708,12 +705,6 @@ onBeforeUnmount(() => {
         </div>
       </Teleport>
     </nav>
-
-    <span
-      v-if="tabs.activeTab?.fileName"
-      class="toolbar__title"
-      :title="tabs.activeTab?.filePath || tabs.activeTab?.fileName"
-    >{{ tabs.activeTab.fileName }}</span>
 
     <div class="toolbar__group">
       <div class="dropdown">
@@ -1228,9 +1219,6 @@ onBeforeUnmount(() => {
 .toolbar--minimal > .toolbar__more {
   display: none;
 }
-.toolbar--minimal .toolbar__title {
-  margin: 0 auto;
-}
 .toolbar--gone {
   display: none;
 }
@@ -1316,15 +1304,6 @@ onBeforeUnmount(() => {
   color: #fff;
 }
 .toolbar > * { flex-shrink: 0; }
-.toolbar__brand {
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  flex: 0 0 22px;
-  margin-right: 4px;
-  pointer-events: none;
-}
-
 .toolbar__group {
   display: flex;
   gap: 1px;
@@ -1430,20 +1409,6 @@ onBeforeUnmount(() => {
    the filename being covered up. A floor stops the shrink while the text is
    still a name; past that the strip overflows, which is honest and is
    exactly the case the "⋯" control already announces. */
-.toolbar__title {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text);
-  margin-left: 4px;
-  padding-right: 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 280px;
-  min-width: 88px;
-  flex-shrink: 1;
-  cursor: default;
-}
 .toolbar__divider {
   width: 1px;
   height: 16px;

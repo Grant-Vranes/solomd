@@ -437,10 +437,6 @@ button:disabled {
 :root.narrow-viewport .toolbar.toolbar--win {
   padding-right: 0;
 }
-:root.narrow-viewport .toolbar__brand,
-:root.narrow-viewport .toolbar__title {
-  display: none;
-}
 :root.narrow-viewport .toolbar__group {
   gap: 2px;
 }
