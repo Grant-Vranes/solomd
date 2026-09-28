@@ -8,6 +8,8 @@ export const sv: I18n = {
     help: 'Hjälp',
     newMd: 'Ny Markdown',
     newText: 'Ny vanlig text',
+    newExcalidraw: "Ny Excalidraw-whiteboard",
+    newDrawio: 'Nytt draw.io-diagram',
     openFile: 'Öppna fil…',
     openFolder: 'Öppna mapp…',
     importDocs: 'Importera dokument…',
@@ -50,6 +52,8 @@ export const sv: I18n = {
   toolbar: {
     newMarkdown: 'Ny Markdown',
     newPlainText: 'Ny vanlig text',
+    newExcalidraw: "Ny Excalidraw-whiteboard",
+    newDrawio: 'Nytt draw.io-diagram',
     openFile: 'Öppna fil',
     openFolder: 'Öppna mapp',
     save: 'Spara',
@@ -1347,6 +1351,19 @@ export const sv: I18n = {
     openFull: 'Öppna helskärm',
     closeFull: 'Stäng',
     insert: 'Infoga whiteboard',
+  },
+  html: {
+    toggleSource: 'Växla mellan rendering / källkod',
+    tooLarge: 'Filen är för stor för att renderas — visar källkoden',
+  },
+  drawio: {
+    corruptNote: 'Denna fil är inte en giltig draw.io-graf — en tom canvas visas. Fixa XML:en eller återställ filen för att återfå grafen.',
+    loadError: 'diagrams.net-redigeraren kunde inte läsas in. Kontrollera din internetanslutning och försök igen.',
+    retry: 'Försök igen',
+  },
+  excalidraw: {
+    corruptNote: "Denna fil är inte en giltig Excalidraw-scen — en tom rityta visas. Fixa JSON:en eller återställ filen för att få tillbaka ritningen.",
+    fenceTitle: "Excalidraw-whiteboard",
   },
   cloudSync: {
     detectedTitle: 'Arbetsytan ligger i {label}',

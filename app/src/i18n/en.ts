@@ -8,6 +8,8 @@ export const en = {
     help: 'Help',
     newMd: 'New Markdown',
     newText: 'New Plain Text',
+    newExcalidraw: 'New Excalidraw Whiteboard',
+    newDrawio: 'New draw.io Diagram',
     openFile: 'Open File…',
     openFolder: 'Open Folder…',
     importDocs: 'Import Documents…',
@@ -50,6 +52,8 @@ export const en = {
   toolbar: {
     newMarkdown: 'New Markdown',
     newPlainText: 'New Plain Text',
+    newExcalidraw: 'New Excalidraw Whiteboard',
+    newDrawio: 'New draw.io Diagram',
     openFile: 'Open File',
     openFolder: 'Open folder',
     save: 'Save',
@@ -1352,6 +1356,19 @@ export const en = {
     openFull: 'Open fullscreen',
     closeFull: 'Close',
     insert: 'Insert whiteboard',
+  },
+  html: {
+    toggleSource: 'Toggle rendered view / source code',
+    tooLarge: 'File too large to render — showing source',
+  },
+  drawio: {
+    corruptNote: 'This file is not a valid draw.io diagram — showing a blank canvas. Fix the XML or restore the file to recover your diagram.',
+    loadError: 'The diagrams.net editor could not be loaded. Check your internet connection and try again.',
+    retry: 'Retry',
+  },
+  excalidraw: {
+    corruptNote: 'This file is not a valid Excalidraw scene — showing a blank canvas. Fix the JSON or restore the file to recover your drawing.',
+    fenceTitle: 'Excalidraw Whiteboard',
   },
   cloudSync: {
     detectedTitle: 'Workspace is in {label}',

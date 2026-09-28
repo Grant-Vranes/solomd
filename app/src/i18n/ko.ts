@@ -8,6 +8,8 @@ export const ko: I18n = {
     help: '도움말',
     newMd: '새 Markdown',
     newText: '새 일반 텍스트',
+    newExcalidraw: "새 Excalidraw 화이트보드",
+    newDrawio: '새 draw.io 다이어그램',
     openFile: '파일 열기…',
     openFolder: '폴더 열기…',
     importDocs: '문서 가져오기…',
@@ -50,6 +52,8 @@ export const ko: I18n = {
   toolbar: {
     newMarkdown: '새 Markdown',
     newPlainText: '새 일반 텍스트',
+    newExcalidraw: "새 Excalidraw 화이트보드",
+    newDrawio: '새 draw.io 다이어그램',
     openFile: '파일 열기',
     openFolder: '폴더 열기',
     save: '저장',
@@ -1344,6 +1348,19 @@ export const ko: I18n = {
     openFull: '전체 화면 열기',
     closeFull: '닫기',
     insert: '화이트보드 삽입',
+  },
+  html: {
+    toggleSource: '렌더링 보기 / 소스 코드 전환',
+    tooLarge: '파일이 너무 커서 렌더링할 수 없습니다 — 소스를 표시합니다',
+  },
+  drawio: {
+    corruptNote: '이 파일은 유효한 draw.io 다이어그램이 아닙니다 — 빈 캔버스가 표시됩니다. 다이어그램을 복구하려면 XML을 수정하거나 파일을 복원하세요.',
+    loadError: 'diagrams.net 편집기를 로드하지 못했습니다. 인터넷 연결을 확인하고 다시 시도하세요.',
+    retry: '다시 시도',
+  },
+  excalidraw: {
+    corruptNote: "이 파일은 유효한 Excalidraw 장면이 아닙니다. 빈 캔버스를 표시합니다. JSON을 수정하거나 파일을 복원하면 그림을 되찾을 수 있습니다.",
+    fenceTitle: "Excalidraw 화이트보드",
   },
   cloudSync: {
     detectedTitle: '워크스페이스가 {label}에 있습니다',

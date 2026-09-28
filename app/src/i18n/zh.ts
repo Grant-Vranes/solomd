@@ -9,6 +9,8 @@ export const zh: I18n = {
     help: '帮助',
     newMd: '新建 Markdown',
     newText: '新建纯文本',
+    newExcalidraw: '新建 Excalidraw 白板',
+    newDrawio: '新建 draw.io 图表',
     openFile: '打开文件…',
     openFolder: '打开文件夹…',
     importDocs: '导入文档…',
@@ -51,6 +53,8 @@ export const zh: I18n = {
   toolbar: {
     newMarkdown: '新建 Markdown',
     newPlainText: '新建文本',
+    newExcalidraw: '新建 Excalidraw 白板',
+    newDrawio: '新建 draw.io 图表',
     openFile: '打开文件',
     openFolder: '打开文件夹',
     save: '保存',
@@ -1341,6 +1345,19 @@ export const zh: I18n = {
     openFull: '全屏打开',
     closeFull: '关闭',
     insert: '插入白板',
+  },
+  html: {
+    toggleSource: '切换渲染视图 / 源码',
+    tooLarge: '文件过大，无法渲染 —— 已显示源码',
+  },
+  drawio: {
+    corruptNote: '这不是有效的 draw.io 图表文件 —— 已显示空白画布。请修复 XML 或还原文件以找回图表。',
+    loadError: 'diagrams.net 编辑器加载失败，请检查网络连接后重试。',
+    retry: '重试',
+  },
+  excalidraw: {
+    corruptNote: '此文件不是有效的 Excalidraw 画布——已显示空白画布。修复 JSON 或恢复文件即可找回内容。',
+    fenceTitle: 'Excalidraw 白板',
   },
   cloudSync: {
     detectedTitle: '工作区在 {label} 中',

@@ -8,6 +8,8 @@ export const ja: I18n = {
     help: 'ヘルプ',
     newMd: '新規 Markdown',
     newText: '新規プレーンテキスト',
+    newExcalidraw: "新規 Excalidraw ホワイトボード",
+    newDrawio: '新規 draw.io 図',
     openFile: 'ファイルを開く…',
     openFolder: 'フォルダを開く…',
     importDocs: 'ドキュメントを取り込む…',
@@ -50,6 +52,8 @@ export const ja: I18n = {
   toolbar: {
     newMarkdown: '新規 Markdown',
     newPlainText: '新規プレーンテキスト',
+    newExcalidraw: "新規 Excalidraw ホワイトボード",
+    newDrawio: '新規 draw.io 図',
     openFile: 'ファイルを開く',
     openFolder: 'フォルダを開く',
     save: '保存',
@@ -1344,6 +1348,19 @@ export const ja: I18n = {
     openFull: '全画面で開く',
     closeFull: '閉じる',
     insert: 'ホワイトボードを挿入',
+  },
+  html: {
+    toggleSource: 'レンダリング表示 / ソースコードを切り替え',
+    tooLarge: 'ファイルが大きすぎてレンダリングできません — ソースを表示しています',
+  },
+  drawio: {
+    corruptNote: 'このファイルは有効な draw.io 図ではないため、空白キャンバスを表示しています。図を復元するには XML を修正するかファイルを元に戻してください。',
+    loadError: 'diagrams.net エディターを読み込めませんでした。インターネット接続を確認して再試行してください。',
+    retry: '再試行',
+  },
+  excalidraw: {
+    corruptNote: "このファイルは有効な Excalidraw シーンではありません。空白キャンバスを表示しています。JSON を修正するかファイルを復元すると図面を取り戻せます。",
+    fenceTitle: "Excalidraw ホワイトボード",
   },
   cloudSync: {
     detectedTitle: 'ワークスペースは {label} 内にあります',

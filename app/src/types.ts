@@ -34,6 +34,9 @@ export interface Tab {
   // without edits because content drifts from savedContent).
   lineEnding?: 'lf' | 'crlf';
   showOutline?: boolean;
+  // HTML document tabs only: true = show raw source instead of the rendered
+  // iframe (see PaneContent / lib/html-doc.ts).
+  htmlSource?: boolean;
 }
 
 export interface FileReadResult {

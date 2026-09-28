@@ -8,6 +8,8 @@ export const tr: I18n = {
     help: 'Yardım',
     newMd: 'Yeni Markdown',
     newText: 'Yeni Düz Metin',
+    newExcalidraw: "Yeni Excalidraw beyaz tahtası",
+    newDrawio: 'Yeni draw.io şeması',
     openFile: 'Dosya Aç…',
     openFolder: 'Klasör Aç…',
     importDocs: 'Belgeleri içe aktar…',
@@ -50,6 +52,8 @@ export const tr: I18n = {
   toolbar: {
     newMarkdown: 'Yeni Markdown',
     newPlainText: 'Yeni Düz Metin',
+    newExcalidraw: "Yeni Excalidraw beyaz tahtası",
+    newDrawio: 'Yeni draw.io şeması',
     openFile: 'Dosya Aç',
     openFolder: 'Klasör aç',
     save: 'Kaydet',
@@ -1347,6 +1351,19 @@ export const tr: I18n = {
     openFull: 'Tam ekran aç',
     closeFull: 'Kapat',
     insert: 'Beyaz tahta ekle',
+  },
+  html: {
+    toggleSource: 'İşlenmiş görünüm / kaynak kodu arasında geçiş yap',
+    tooLarge: 'Dosya işlenemeyecek kadar büyük — kaynak kod gösteriliyor',
+  },
+  drawio: {
+    corruptNote: 'Bu dosya geçerli bir draw.io şeması değil — boş bir tuval gösteriliyor. Şemanızı kurtarmak için XML’i düzeltin veya dosyayı geri yükleyin.',
+    loadError: 'diagrams.net editörü yüklenemedi. İnternet bağlantınızı kontrol edip tekrar deneyin.',
+    retry: 'Yeniden dene',
+  },
+  excalidraw: {
+    corruptNote: "Bu dosya geçerli bir Excalidraw sahnesi değil — boş tuval gösteriliyor. Çiziminizi kurtarmak için JSON düzeltmesi yapın veya dosyayı geri yükleyin.",
+    fenceTitle: "Excalidraw beyaz tahtası",
   },
   cloudSync: {
     detectedTitle: 'Çalışma alanı {label} içinde',

@@ -2,8 +2,16 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import Editor from './Editor.vue';
 import Preview from './Preview.vue';
+import ExcalidrawPane from './ExcalidrawPane.vue';
+import DrawioPane from './DrawioPane.vue';
+import HtmlPane from './HtmlPane.vue';
+import { isExcalidrawName } from '../lib/excalidraw-scene';
+import { isDrawioName } from '../lib/drawio';
+import { isHtmlName, shouldAutoRenderHtml, loadHtmlViewMode, saveHtmlViewMode } from '../lib/html-doc';
 import { useSettingsStore } from '../stores/settings';
 import { useTilesStore } from '../stores/tiles';
+import Icon from './Icons.vue';
+import { useI18n } from '../i18n';
 import type { Tab } from '../types';
 import { isWindowsEditorRuntime, shouldUsePlainWindowsEditor } from '../lib/platform';
 
@@ -19,12 +27,42 @@ const emit = defineEmits<{
 
 const settings = useSettingsStore();
 const tiles = useTilesStore();
+const { t } = useI18n();
 
 const editorRef = ref<InstanceType<typeof Editor> | null>(null);
 const previewRef = ref<InstanceType<typeof Preview> | null>(null);
 
+const isExcalidrawTab = computed(() => isExcalidrawName(props.tab?.fileName) || isExcalidrawName(props.tab?.filePath));
+
+const isDrawioTab = computed(() => isDrawioName(props.tab?.fileName) || isDrawioName(props.tab?.filePath));
+
+// HTML document tabs (like horseMD): render in a sandboxed iframe by default,
+// toggleable to raw source via the button in the pane's top-right corner.
+const isHtmlTab = computed(() => isHtmlName(props.tab?.fileName) || isHtmlName(props.tab?.filePath));
+const htmlRenderEligible = computed(() => isHtmlTab.value && shouldAutoRenderHtml(props.tab?.content || ''));
+const htmlShowSource = computed(() => {
+  if (!isHtmlTab.value) return false;
+  if (!htmlRenderEligible.value) return true;
+  if (props.tab?.htmlSource != null) return props.tab.htmlSource;
+  // First open this session: restore the per-path preference from the last
+  // time the user toggled this document (horseMD's htmlView persistence).
+  return loadHtmlViewMode(props.tab?.filePath) === 'source';
+});
+
+function toggleHtmlSource() {
+  const tab = props.tab;
+  if (!tab || !htmlRenderEligible.value) return;
+  const next = !htmlShowSource.value;
+  tab.htmlSource = next;
+  saveHtmlViewMode(tab.filePath, next ? 'source' : 'render');
+}
+
 const showEditor = computed(
-  () => props.tab?.language !== 'markdown' || settings.viewMode !== 'preview'
+  () =>
+    !isExcalidrawTab.value &&
+    !isDrawioTab.value &&
+    !(isHtmlTab.value) && // HTML tabs render via the pane--html block below
+    (props.tab?.language !== 'markdown' || settings.viewMode !== 'preview'),
 );
 // `liveEdit` mode is editor-only: the inline-rendered markdown IS the
 // preview, so we don't show the separate Preview pane next to it.
@@ -442,6 +480,50 @@ function onPreviewSearchEvent(e: Event) {
       'pane-content--distinct': settings.distinctSplitPanes && showEditor && showPreview,
     }"
   >
+    <!-- .excalidraw files render as a dedicated excalidraw canvas tab (like
+       horseMD) — the scene JSON is never shown as raw text. -->
+    <div class="pane pane--excalidraw" v-if="isExcalidrawTab && tab">
+      <ExcalidrawPane :key="tab.id" :tab-id="tab.id" />
+    </div>
+    <!-- .drawio files render as an embedded diagrams.net canvas tab (like
+       horseMD) — the XML is never shown as raw text. -->
+    <div class="pane pane--drawio" v-if="isDrawioTab && tab">
+      <DrawioPane :key="tab.id" :tab-id="tab.id" />
+    </div>
+    <!-- .html/.htm files render in a sandboxed iframe (like horseMD), with a
+       render/source toggle button in the pane's top-right corner. -->
+    <div class="pane pane--html" v-if="isHtmlTab && tab" :class="{ 'pane--html-source': htmlShowSource }">
+      <button
+        type="button"
+        class="icon-btn html-mode-toggle"
+        :title="t('html.toggleSource')"
+        :disabled="!htmlRenderEligible"
+        @click="toggleHtmlSource"
+      >
+        <!-- Icon shows what you switch TO: rendered view → </> (go to
+             source); source view → eye (go to rendered). Same convention as
+             Toolbar's livePreview toggle. -->
+        <Icon :name="htmlShowSource ? 'view-preview' : 'source'" :size="16" />
+      </button>
+      <div v-if="!htmlRenderEligible" class="html-too-large-notice" role="status">{{ t('html.tooLarge') }}</div>
+      <HtmlPane
+        v-if="!htmlShowSource"
+        :key="tab.id"
+        :content="tab.content"
+        :file-path="tab.filePath"
+      />
+      <Editor
+        v-else
+        ref="editorRef"
+        :key="editorImplementationKey"
+        :tab="tab"
+        :focus-mode="settings.focusMode"
+        :typewriter-mode="settings.typewriterMode"
+        :spell-check="settings.spellCheck"
+        @cursor="onCursor"
+        @selection="onSelection"
+      />
+    </div>
     <div class="pane pane--editor" v-if="showEditor && tab">
       <Editor
         :key="editorImplementationKey"
@@ -483,5 +565,49 @@ function onPreviewSearchEvent(e: Event) {
 }
 .pane--editor + .pane--preview {
   border-left: 1px solid var(--border);
+}
+.pane--excalidraw {
+  display: flex;
+}
+.pane--html {
+  position: relative;
+  display: flex;
+}
+/* Render/source toggle floats over the content's top-right corner, matching
+   horseMD's .html-mode-toggle. Hidden in source mode so the editor's own
+   chrome stays unobstructed; the editor keeps the button reachable via the
+   render toggle's spot. Actually kept visible in both modes (horseMD does
+   the same) so the user can always get back to the rendered view. */
+.html-mode-toggle {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 10;
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--fg, #333);
+  opacity: 0.85;
+}
+.html-mode-toggle:hover {
+  opacity: 1;
+}
+.html-mode-toggle:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.html-too-large-notice {
+  position: absolute;
+  top: 40px;
+  right: 12px;
+  z-index: 10;
+  font-size: 12px;
+  color: var(--fg-muted, #888);
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+  padding: 4px 8px;
 }
 </style>

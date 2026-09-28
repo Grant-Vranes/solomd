@@ -8,6 +8,8 @@ export const ru: I18n = {
     help: 'Справка',
     newMd: 'Новый Markdown',
     newText: 'Новый простой текст',
+    newExcalidraw: "Новая доска Excalidraw",
+    newDrawio: 'Новая диаграмма draw.io',
     openFile: 'Открыть файл…',
     openFolder: 'Открыть папку…',
     importDocs: 'Импорт документов…',
@@ -50,6 +52,8 @@ export const ru: I18n = {
   toolbar: {
     newMarkdown: 'Новый Markdown',
     newPlainText: 'Новый простой текст',
+    newExcalidraw: "Новая доска Excalidraw",
+    newDrawio: 'Новая диаграмма draw.io',
     openFile: 'Открыть файл',
     openFolder: 'Открыть папку',
     save: 'Сохранить',
@@ -1339,6 +1343,19 @@ export const ru: I18n = {
     openFull: 'Во весь экран',
     closeFull: 'Закрыть',
     insert: 'Вставить доску',
+  },
+  html: {
+    toggleSource: 'Переключить просмотр / исходный код',
+    tooLarge: 'Файл слишком велик для отображения — показан исходный код',
+  },
+  drawio: {
+    corruptNote: 'Этот файл не является корректной диаграммой draw.io — показан пустой холст. Исправьте XML или восстановите файл, чтобы вернуть диаграмму.',
+    loadError: 'Не удалось загрузить редактор diagrams.net. Проверьте подключение к интернету и повторите попытку.',
+    retry: 'Повторить',
+  },
+  excalidraw: {
+    corruptNote: "Этот файл не является корректной сценой Excalidraw — показан пустой холст. Исправьте JSON или восстановите файл, чтобы вернуть рисунок.",
+    fenceTitle: "Доска Excalidraw",
   },
   cloudSync: {
     detectedTitle: 'Рабочая папка находится в {label}',

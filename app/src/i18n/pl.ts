@@ -8,6 +8,8 @@ export const pl: I18n = {
     help: 'Pomoc',
     newMd: 'Nowy Markdown',
     newText: 'Nowy zwykły tekst',
+    newExcalidraw: "Nowa tablica Excalidraw",
+    newDrawio: 'Nowy diagram draw.io',
     openFile: 'Otwórz plik…',
     openFolder: 'Otwórz folder…',
     importDocs: 'Importuj dokumenty…',
@@ -50,6 +52,8 @@ export const pl: I18n = {
   toolbar: {
     newMarkdown: 'Nowy Markdown',
     newPlainText: 'Nowy zwykły tekst',
+    newExcalidraw: "Nowa tablica Excalidraw",
+    newDrawio: 'Nowy diagram draw.io',
     openFile: 'Otwórz plik',
     openFolder: 'Otwórz folder',
     save: 'Zapisz',
@@ -1347,6 +1351,19 @@ export const pl: I18n = {
     openFull: 'Otwórz pełny ekran',
     closeFull: 'Zamknij',
     insert: 'Wstaw tablicę',
+  },
+  html: {
+    toggleSource: 'Przełącz podgląd / kod źródłowy',
+    tooLarge: 'Plik zbyt duży do renderowania — pokazuję kod źródłowy',
+  },
+  drawio: {
+    corruptNote: 'Ten plik nie jest prawidłowym diagramem draw.io — wyświetlana jest pusta kanwa. Napraw plik XML lub przywróć plik, aby odzyskać diagram.',
+    loadError: 'Nie udało się wczytać edytora diagrams.net. Sprawdź połączenie internetowe i spróbuj ponownie.',
+    retry: 'Ponów',
+  },
+  excalidraw: {
+    corruptNote: "Ten plik nie jest prawidłową sceną Excalidraw — wyświetlana jest pusta plansza. Napraw JSON lub przywróć plik, aby odzyskać rysunek.",
+    fenceTitle: "Tablica Excalidraw",
   },
   cloudSync: {
     detectedTitle: 'Obszar roboczy znajduje się w {label}',

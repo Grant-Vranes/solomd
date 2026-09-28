@@ -8,6 +8,8 @@ export const de: I18n = {
     help: 'Hilfe',
     newMd: 'Neues Markdown',
     newText: 'Neuer Text',
+    newExcalidraw: "Neue Excalidraw-Zeichnung",
+    newDrawio: 'Neues draw.io-Diagramm',
     openFile: 'Datei öffnen…',
     openFolder: 'Ordner öffnen…',
     importDocs: 'Dokumente importieren…',
@@ -50,6 +52,8 @@ export const de: I18n = {
   toolbar: {
     newMarkdown: 'Neues Markdown',
     newPlainText: 'Neuer Text',
+    newExcalidraw: "Neue Excalidraw-Zeichnung",
+    newDrawio: 'Neues draw.io-Diagramm',
     openFile: 'Datei öffnen',
     openFolder: 'Ordner öffnen',
     save: 'Speichern',
@@ -1344,6 +1348,19 @@ export const de: I18n = {
     openFull: 'Vollbild öffnen',
     closeFull: 'Schließen',
     insert: 'Whiteboard einfügen',
+  },
+  html: {
+    toggleSource: 'Umschalten zwischen gerenderter Ansicht / Quellcode',
+    tooLarge: 'Datei zu groß zum Rendern — Quellcode wird angezeigt',
+  },
+  drawio: {
+    corruptNote: 'Diese Datei ist keine gültige draw.io-Zeichnung — eine leere Leinwand wird angezeigt. Repariere das XML oder stelle die Datei wieder her, um das Diagramm zurückzugewinnen.',
+    loadError: 'Der diagrams.net-Editor konnte nicht geladen werden. Prüfe die Internetverbindung und versuche es erneut.',
+    retry: 'Erneut versuchen',
+  },
+  excalidraw: {
+    corruptNote: "Diese Datei ist keine gültige Excalidraw-Zeichnung – es wird eine leere Leinwand angezeigt. Repariere das JSON oder stelle die Datei wieder her, um die Inhalte zu behalten.",
+    fenceTitle: "Excalidraw-Zeichnung",
   },
   cloudSync: {
     detectedTitle: 'Workspace befindet sich in {label}',

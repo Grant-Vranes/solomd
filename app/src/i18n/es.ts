@@ -8,6 +8,8 @@ export const es: I18n = {
     help: 'Ayuda',
     newMd: 'Nuevo Markdown',
     newText: 'Nuevo texto plano',
+    newExcalidraw: "Nuevo pizarra Excalidraw",
+    newDrawio: 'Nuevo diagrama draw.io',
     openFile: 'Abrir archivo…',
     openFolder: 'Abrir carpeta…',
     importDocs: 'Importar documentos…',
@@ -50,6 +52,8 @@ export const es: I18n = {
   toolbar: {
     newMarkdown: 'Nuevo Markdown',
     newPlainText: 'Nuevo texto plano',
+    newExcalidraw: "Nueva pizarra Excalidraw",
+    newDrawio: 'Nuevo diagrama draw.io',
     openFile: 'Abrir archivo',
     openFolder: 'Abrir carpeta',
     save: 'Guardar',
@@ -1344,6 +1348,19 @@ export const es: I18n = {
     openFull: 'Abrir pantalla completa',
     closeFull: 'Cerrar',
     insert: 'Insertar pizarra',
+  },
+  html: {
+    toggleSource: 'Alternar vista renderizada / código fuente',
+    tooLarge: 'Archivo demasiado grande para renderizar: mostrando el código fuente',
+  },
+  drawio: {
+    corruptNote: 'Este archivo no es un diagrama draw.io válido — se muestra un lienzo vacío. Corrige el XML o restaura el archivo para recuperar tu diagrama.',
+    loadError: 'No se pudo cargar el editor diagrams.net. Comprueba tu conexión a internet e inténtalo de nuevo.',
+    retry: 'Reintentar',
+  },
+  excalidraw: {
+    corruptNote: "Este archivo no es una escena de Excalidraw válida: se muestra un lienzo vacío. Corrige el JSON o restaura el archivo para recuperar el dibujo.",
+    fenceTitle: "Pizarra Excalidraw",
   },
   cloudSync: {
     detectedTitle: 'El workspace está en {label}',

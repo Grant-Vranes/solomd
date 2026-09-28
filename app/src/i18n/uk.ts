@@ -8,6 +8,8 @@ export const uk: I18n = {
     help: 'Довідка',
     newMd: 'Новий Markdown',
     newText: 'Новий звичайний текст',
+    newExcalidraw: "Нова дошка Excalidraw",
+    newDrawio: 'Нова діаграма draw.io',
     openFile: 'Відкрити файл…',
     openFolder: 'Відкрити теку…',
     importDocs: 'Імпортувати документи…',
@@ -50,6 +52,8 @@ export const uk: I18n = {
   toolbar: {
     newMarkdown: 'Новий Markdown',
     newPlainText: 'Новий звичайний текст',
+    newExcalidraw: "Нова дошка Excalidraw",
+    newDrawio: 'Нова діаграма draw.io',
     openFile: 'Відкрити файл',
     openFolder: 'Відкрити теку',
     save: 'Зберегти',
@@ -1347,6 +1351,19 @@ export const uk: I18n = {
     openFull: 'Відкрити на весь екран',
     closeFull: 'Закрити',
     insert: 'Вставити дошку',
+  },
+  html: {
+    toggleSource: 'Переключити перегляд / вихідний код',
+    tooLarge: 'Файл завеликий для відображення — показано вихідний код',
+  },
+  drawio: {
+    corruptNote: 'Цей файл не є коректною діаграмою draw.io — показано порожнє полотно. Виправте XML або відновіть файл, щоб повернути діаграму.',
+    loadError: 'Не вдалося завантажити редактор diagrams.net. Перевірте підключення до інтернету та спробуйте ще раз.',
+    retry: 'Повторити',
+  },
+  excalidraw: {
+    corruptNote: "Цей файл не є коректною сценою Excalidraw — показано порожнє полотно. Виправте JSON або відновіть файл, щоб повернути малюнок.",
+    fenceTitle: "Дошка Excalidraw",
   },
   cloudSync: {
     detectedTitle: 'Робочий простір у {label}',

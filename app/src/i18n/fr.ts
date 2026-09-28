@@ -8,6 +8,8 @@ export const fr: I18n = {
     help: 'Aide',
     newMd: 'Nouveau Markdown',
     newText: 'Nouveau texte brut',
+    newExcalidraw: "Nouveau tableau Excalidraw",
+    newDrawio: 'Nouveau diagramme draw.io',
     openFile: 'Ouvrir un fichier…',
     openFolder: 'Ouvrir un dossier…',
     importDocs: 'Importer des documents…',
@@ -50,6 +52,8 @@ export const fr: I18n = {
   toolbar: {
     newMarkdown: 'Nouveau Markdown',
     newPlainText: 'Nouveau texte brut',
+    newExcalidraw: "Nouveau tableau Excalidraw",
+    newDrawio: 'Nouveau diagramme draw.io',
     openFile: 'Ouvrir un fichier',
     openFolder: 'Ouvrir un dossier',
     save: 'Enregistrer',
@@ -1344,6 +1348,19 @@ export const fr: I18n = {
     openFull: 'Ouvrir en plein écran',
     closeFull: 'Fermer',
     insert: 'Insérer un tableau',
+  },
+  html: {
+    toggleSource: 'Basculer entre rendu / code source',
+    tooLarge: 'Fichier trop volumineux pour être rendu — affichage du code source',
+  },
+  drawio: {
+    corruptNote: "Ce fichier n'est pas un diagramme draw.io valide — un canevas vide est affiché. Corrigez le XML ou restaurez le fichier pour récupérer votre diagramme.",
+    loadError: "L'éditeur diagrams.net n'a pas pu être chargé. Vérifiez votre connexion internet et réessayez.",
+    retry: 'Réessayer',
+  },
+  excalidraw: {
+    corruptNote: "Ce fichier nest pas une scène Excalidraw valide — une zone de dessin vierge est affichée. Corrigez le JSON ou restaurez le fichier pour récupérer votre dessin.",
+    fenceTitle: "Tableau Excalidraw",
   },
   cloudSync: {
     detectedTitle: 'Le workspace est dans {label}',

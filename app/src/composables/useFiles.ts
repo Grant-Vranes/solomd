@@ -18,6 +18,8 @@ import type { FileReadResult, Tab } from '../types';
 import { isSafPath, fromSafPath, safRead, safWrite, safLaunchPicker } from '../lib/saf-fs';
 import { baseNameOf, fileNameOf, claimImportName, joinInFolder } from '../lib/import-plan';
 import { newFileDirFor, treeSelection } from '../lib/new-file-target';
+import { EMPTY_EXCALIDRAW_SCENE } from '../lib/excalidraw-scene';
+import { EMPTY_DRAWIO_XML } from '../lib/drawio';
 
 // Save dialogs only — opening uses no filter so any file is selectable.
 // (rfd treats `'*'` literally as the extension `*`, not as wildcard, so we
@@ -83,6 +85,20 @@ export function useFiles() {
     tabs.newTab({ fileName: 'Untitled.txt', language: 'plaintext' });
   }
 
+  /** New .excalidraw whiteboard tab — pre-filled with the minimal valid
+   *  scene so the ExcalidrawPane mounts a usable canvas immediately. */
+  async function newExcalidrawFile() {
+    const tab = tabs.newTab({ fileName: 'Untitled.excalidraw', language: 'plaintext' });
+    tabs.setContent(tab.id, EMPTY_EXCALIDRAW_SCENE);
+  }
+
+  /** New .drawio diagram tab — pre-filled with the minimal valid mxfile so
+   *  the DrawioPane mounts a usable canvas immediately. */
+  async function newDrawioFile() {
+    const tab = tabs.newTab({ fileName: 'Untitled.drawio', language: 'plaintext' });
+    tabs.setContent(tab.id, EMPTY_DRAWIO_XML);
+  }
+
   async function openFile() {
     // No filters: rfd's filter behavior on macOS greys out non-matching files
     // and `'*'` is not treated as a wildcard. Letting the user pick anything
@@ -96,7 +112,11 @@ export function useFiles() {
   }
 
   // Extensions that the built-in converter handles (Rust, no Python).
-  const CONVERT_BUILTIN = new Set(['docx', 'csv', 'xlsx', 'xls', 'html', 'htm']);
+  // html/htm removed (v4.15): .html files now open as native HTML document
+  // tabs with a render/source toggle (like horseMD) instead of being
+  // converted to Markdown. Importing HTML → .md still exists via
+  // importDocuments' own extension list below.
+  const CONVERT_BUILTIN = new Set(['docx', 'csv', 'xlsx', 'xls']);
 
   // Extensions that need markitdown CLI (Python).
   // #98 — image extensions were removed from here: clicking an image in the
@@ -123,6 +143,21 @@ export function useFiles() {
     'vue', 'svelte', 'astro', 'py', 'rb', 'php', 'go', 'rs', 'java', 'kt',
     'swift', 'c', 'h', 'cpp', 'hpp', 'cc', 'cs', 'sh', 'bash', 'zsh', 'fish',
     'pl', 'lua', 'r', 'sql', 'graphql', 'proto', 'gradle', 'properties',
+    'excalidraw', // excalidraw scene JSON — renders as a canvas tab
+    'drawio', // drawio diagram XML — renders as an embedded diagrams.net tab
+    'html', 'htm', // HTML documents — render in-app with a source toggle
+  ]);
+
+  // Extensions we know how to open in-app (editor tab, image overlay, or the
+  // Markdown converter). Anything else with an extension — .zip, .exe, .mp4,
+  // fonts, databases, … — is NOT pulled through read_file (that produced
+  // mojibake tabs or a raw decode error); it is handed to the OS default app
+  // instead, with a "not supported" toast if that fails too.
+  const KNOWN_OPENABLE_EXTENSIONS = new Set([
+    ...TEXT_LINK_EXTENSIONS,
+    ...IMAGE_EXTENSIONS,
+    ...CONVERT_BUILTIN,
+    ...CONVERT_CLI,
   ]);
 
   function overlayStrings(): OverlayStrings {
@@ -286,6 +321,22 @@ export function useFiles() {
     // If it's a convertible format, convert to Markdown first.
     if (CONVERT_BUILTIN.has(ext) || CONVERT_CLI.has(ext)) {
       return openAndConvert(path, ext);
+    }
+
+    // Unknown binary / unsupported types (an extension that is neither text,
+    // an image, nor convertible): don't force them into an editor tab or a
+    // Markdown conversion — hand them to the OS default app. Extensionless
+    // files still attempt a text read (scripts, dotfiles, …).
+    if (ext && !KNOWN_OPENABLE_EXTENSIONS.has(ext)) {
+      const fileName = fileNameOf(path);
+      try {
+        await openWithSystemDefault(path);
+        toasts.info(`Opened ${fileName} with the system default app`);
+      } catch (e) {
+        console.error('open with system default failed', e);
+        toasts.error(`Unsupported file type: .${ext}`);
+      }
+      return;
     }
 
     // Native open: text files, markdown, code, etc.
@@ -888,6 +939,8 @@ export function useFiles() {
   return {
     newFile,
     newTextFile,
+    newExcalidrawFile,
+    newDrawioFile,
     openFile,
     importDocuments,
     openPath,

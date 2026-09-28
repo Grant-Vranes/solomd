@@ -8,6 +8,8 @@ export const nl: I18n = {
     help: 'Help',
     newMd: 'Nieuwe Markdown',
     newText: 'Nieuwe platte tekst',
+    newExcalidraw: "Nieuw Excalidraw-witbord",
+    newDrawio: 'Nieuw draw.io-diagram',
     openFile: 'Bestand openen…',
     openFolder: 'Map openen…',
     importDocs: 'Documenten importeren…',
@@ -50,6 +52,8 @@ export const nl: I18n = {
   toolbar: {
     newMarkdown: 'Nieuwe Markdown',
     newPlainText: 'Nieuwe platte tekst',
+    newExcalidraw: "Nieuw Excalidraw-witbord",
+    newDrawio: 'Nieuw draw.io-diagram',
     openFile: 'Bestand openen',
     openFolder: 'Map openen',
     save: 'Opslaan',
@@ -1347,6 +1351,19 @@ export const nl: I18n = {
     openFull: 'Volledig scherm openen',
     closeFull: 'Sluiten',
     insert: 'Whiteboard invoegen',
+  },
+  html: {
+    toggleSource: 'Wissel tussen weergave / broncode',
+    tooLarge: 'Bestand te groot om te renderen — broncode wordt getoond',
+  },
+  drawio: {
+    corruptNote: 'Dit bestand is geen geldig draw.io-diagram — er wordt een leeg canvas getoond. Repareer de XML of herstel het bestand om je diagram terug te krijgen.',
+    loadError: 'De diagrams.net-editor kon niet worden geladen. Controleer je internetverbinding en probeer het opnieuw.',
+    retry: 'Opnieuw proberen',
+  },
+  excalidraw: {
+    corruptNote: "Dit bestand is geen geldige Excalidraw-scène — er wordt een leeg canvas getoond. Herstel de JSON of het bestand om je tekening terug te krijgen.",
+    fenceTitle: "Excalidraw-witbord",
   },
   cloudSync: {
     detectedTitle: 'Werkruimte staat in {label}',

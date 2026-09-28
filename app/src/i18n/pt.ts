@@ -10,6 +10,8 @@ export const pt: I18n = {
     help: 'Ajuda',
     newMd: 'Novo Markdown',
     newText: 'Novo texto simples',
+    newExcalidraw: "Novo quadro Excalidraw",
+    newDrawio: 'Novo diagrama draw.io',
     openFile: 'Abrir arquivo…',
     openFolder: 'Abrir pasta…',
     importDocs: 'Importar documentos…',
@@ -52,6 +54,8 @@ export const pt: I18n = {
   toolbar: {
     newMarkdown: 'Novo Markdown',
     newPlainText: 'Novo texto simples',
+    newExcalidraw: "Novo quadro Excalidraw",
+    newDrawio: 'Novo diagrama draw.io',
     openFile: 'Abrir arquivo',
     openFolder: 'Abrir pasta',
     save: 'Salvar',
@@ -1346,6 +1350,19 @@ export const pt: I18n = {
     openFull: 'Abrir em tela cheia',
     closeFull: 'Fechar',
     insert: 'Inserir quadro',
+  },
+  html: {
+    toggleSource: 'Alternar entre visualização / código-fonte',
+    tooLarge: 'Arquivo grande demais para renderizar — exibindo o código-fonte',
+  },
+  drawio: {
+    corruptNote: 'Este arquivo não é um diagrama draw.io válido — uma tela em branco é exibida. Corrija o XML ou restaure o arquivo para recuperar o diagrama.',
+    loadError: 'Não foi possível carregar o editor diagrams.net. Verifique sua conexão com a internet e tente novamente.',
+    retry: 'Tentar novamente',
+  },
+  excalidraw: {
+    corruptNote: "Este arquivo não é uma cena válida do Excalidraw — exibindo uma tela em branco. Corrija o JSON ou restaure o arquivo para recuperar o desenho.",
+    fenceTitle: "Quadro Excalidraw",
   },
   cloudSync: {
     detectedTitle: 'O workspace está em {label}',
