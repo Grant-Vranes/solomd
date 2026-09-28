@@ -607,6 +607,8 @@ export const zh: I18n = {
     zoomIn: '放大',
     zoomOut: '缩小',
     resetZoom: '重置',
+
+    fit: '适应窗口',
     image: '图片',
     diagram: '图表',
     exportPng: '导出 PNG',

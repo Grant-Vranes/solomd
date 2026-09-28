@@ -185,6 +185,9 @@ function onTabsWheel(e: WheelEvent) {
 .tabs {
   display: flex;
   flex: 1;
+  gap: 4px;
+  align-items: center;
+  padding: 0 6px;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -194,30 +197,28 @@ function onTabsWheel(e: WheelEvent) {
   display: flex;
   align-items: center;
   gap: 6px;
-  max-width: 200px;
-  padding: 0 10px 0 14px;
-  border-right: 1px solid var(--border);
+  max-width: 240px;
+  height: calc(100% - 6px);
+  margin: 3px 0;
+  padding: 0 8px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
   position: relative;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 .tab:hover {
   background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--text-faint) 45%, var(--border));
 }
 .tab--active {
-  background: var(--bg);
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   color: var(--text);
-}
-.tab--active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 2px;
-  background: var(--accent);
+  font-weight: 600;
 }
 .tab__name {
   overflow: hidden;

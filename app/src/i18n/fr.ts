@@ -606,6 +606,8 @@ export const fr: I18n = {
     zoomIn: 'Zoom avant',
     zoomOut: 'Zoom arrière',
     resetZoom: 'Réinitialiser',
+
+    fit: 'Ajuster',
     image: 'Image',
     diagram: 'Diagramme',
     exportPng: 'Exporter en PNG',

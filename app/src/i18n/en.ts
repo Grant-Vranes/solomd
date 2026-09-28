@@ -607,6 +607,8 @@ export const en = {
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',
     resetZoom: 'Reset',
+
+    fit: 'Fit',
     image: 'Image',
     diagram: 'Diagram',
     exportPng: 'Export PNG',

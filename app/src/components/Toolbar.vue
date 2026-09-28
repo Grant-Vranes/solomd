@@ -457,6 +457,8 @@ const menubarMenus = computed<Record<MenubarName, MenubarEntry[]>>(() => ({
   file: [
     { id: 'file.new', label: t('menubar.newMd'), shortcut: shortcutLabel('file.new', settings.keybindings, macChord) },
     { id: 'file.newText', label: t('menubar.newText'), shortcut: shortcutLabel('file.newText', settings.keybindings, macChord) },
+    { id: 'file.newExcalidraw', label: t('menubar.newExcalidraw') },
+    { id: 'file.newDrawio', label: t('menubar.newDrawio') },
     { sep: true },
     { id: 'file.open', label: t('menubar.openFile'), shortcut: shortcutLabel('file.open', settings.keybindings, macChord) },
     { id: 'file.openFolder', label: t('menubar.openFolder') },
@@ -728,6 +730,14 @@ onBeforeUnmount(() => {
               <Icon name="new-text" />
               <span class="dropdown__name">{{ t('toolbar.newPlainText') }}</span>
               <span class="dropdown__shortcut">Ctrl+Alt+N</span>
+            </button>
+            <button class="dropdown__item dropdown__item--single" @mousedown.prevent="files.newExcalidrawFile(); newOpen = false">
+              <Icon name="new-text" />
+              <span class="dropdown__name">{{ t('toolbar.newExcalidraw') }}</span>
+            </button>
+            <button class="dropdown__item dropdown__item--single" @mousedown.prevent="files.newDrawioFile(); newOpen = false">
+              <Icon name="new-text" />
+              <span class="dropdown__name">{{ t('toolbar.newDrawio') }}</span>
             </button>
           </div>
         </Teleport>

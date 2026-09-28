@@ -604,6 +604,8 @@ export const ru: I18n = {
     zoomIn: 'Увеличить',
     zoomOut: 'Уменьшить',
     resetZoom: 'Сбросить',
+
+    fit: 'По размеру',
     image: 'Изображение',
     diagram: 'Диаграмма',
     exportPng: 'Экспорт в PNG',

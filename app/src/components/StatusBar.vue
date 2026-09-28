@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { isMacOS } from '../lib/platform';
+import { fileTypeLabel } from '../lib/file-type-label';
 import { shortcutLabel } from '../lib/keybindings';
 import { useTabsStore } from '../stores/tabs';
 import { useSettingsStore } from '../stores/settings';
@@ -52,7 +53,14 @@ const selStats = computed(() => {
   return cjkWordCount(s);
 });
 
-const lang = computed(() => (tabs.activeTab?.language === 'markdown' ? 'Markdown' : 'Plain Text'));
+// Display-only file type: real language names for non-markdown files,
+// while tab.language stays the 'markdown' | 'plaintext' binary that the
+// editor logic depends on.
+const lang = computed(() => {
+  const tab = tabs.activeTab;
+  if (!tab) return 'Plain Text';
+  return fileTypeLabel(tab.fileName, tab.language);
+});
 const enc = computed(() => tabs.activeTab?.encoding ?? 'UTF-8');
 
 const showTodayTotal = computed(

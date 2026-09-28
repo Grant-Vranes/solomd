@@ -152,6 +152,8 @@ export function useCommands(): Command[] {
   const all: Command[] = [
     { id: 'file.new', title: 'New Markdown File', shortcut: kb('file.new'), run: () => files.newFile() },
     { id: 'file.newText', title: 'New Plain Text File', shortcut: kb('file.newText'), run: () => files.newTextFile() },
+    { id: 'file.newExcalidraw', title: 'New Excalidraw Whiteboard', run: () => files.newExcalidrawFile() },
+    { id: 'file.newDrawio', title: 'New draw.io Diagram', run: () => files.newDrawioFile() },
     {
       // #338 — create in the folder selected in the file tree (the selected
       // file's folder for a file), named inline like the tree's own ＋. With

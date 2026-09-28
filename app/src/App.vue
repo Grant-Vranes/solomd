@@ -33,6 +33,7 @@ import { useGithubSync } from './composables/useGithubSync';
 import { useSessionRestore } from './composables/useSessionRestore';
 import SessionRestoreDialog from './components/SessionRestoreDialog.vue';
 import WhiteboardOverlay from './components/WhiteboardOverlay.vue';
+import ExcalidrawOverlay from './components/ExcalidrawOverlay.vue';
 import AIRewriteOverlay from './components/AIRewriteOverlay.vue';
 import BasesView from './components/BasesView.vue';
 import { BASES_OPEN_EVENT, BASES_CLOSE_EVENT } from './composables/useBasesView';
@@ -855,6 +856,12 @@ function dispatchMenuAction(id: string) {
       break;
     case 'file.newText':
       files.newTextFile();
+      break;
+    case 'file.newExcalidraw':
+      files.newExcalidrawFile();
+      break;
+    case 'file.newDrawio':
+      files.newDrawioFile();
       break;
     case 'file.open':
       files.openFile();
@@ -2097,6 +2104,7 @@ watchEffect(() => { void settings.aiEnabled; void settings.aiProvider; refreshAi
     <!-- v4.6 F5 — saved-view create/edit modal (self-mounts via window events). -->
     <ViewEditorDialog />
     <WhiteboardOverlay />
+    <ExcalidrawOverlay />
     <FileChangedDialog
       :open="fileChangedOpen"
       :file-name="fileChangedFileName"

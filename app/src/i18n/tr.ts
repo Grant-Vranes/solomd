@@ -606,6 +606,8 @@ export const tr: I18n = {
     zoomIn: 'Yakınlaştır',
     zoomOut: 'Uzaklaştır',
     resetZoom: 'Sıfırla',
+
+    fit: 'Sığdır',
     image: 'Görsel',
     diagram: 'Diyagram',
     exportPng: 'PNG olarak dışa aktar',

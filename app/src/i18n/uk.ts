@@ -606,6 +606,8 @@ export const uk: I18n = {
     zoomIn: 'Збільшити',
     zoomOut: 'Зменшити',
     resetZoom: 'Скинути',
+
+    fit: 'За розміром',
     image: 'Зображення',
     diagram: 'Діаграма',
     exportPng: 'Експортувати PNG',

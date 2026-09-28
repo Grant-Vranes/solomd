@@ -1,5 +1,5 @@
 import { inject } from 'vue';
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { documentDir, desktopDir, homeDir, join } from '@tauri-apps/api/path';
@@ -11,7 +11,7 @@ import { useSettingsStore } from '../stores/settings';
 import { useToastsStore } from '../stores/toasts';
 import { useRecentEditsStore } from '../stores/recentEdits';
 import { useWindowsStore } from '../stores/windows';
-import { openImageOverlay, type OverlayStrings } from '../lib/image-overlay';
+import { IMAGE_FILE_EXTENSIONS, isImageFileName } from '../lib/image-file';
 import { openPath as openWithSystemDefault } from '@tauri-apps/plugin-opener';
 import { useI18n } from '../i18n';
 import type { FileReadResult, Tab } from '../types';
@@ -127,9 +127,9 @@ export function useFiles() {
     'mp3', 'wav', 'm4a', 'ogg', 'flac',
   ]);
 
-  // #98 — image files open in the fullscreen image overlay (same viewer the
-  // preview pane uses), not the document converter.
-  const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
+  // #98 → image files now open as a real TAB (TabBar entry + ImagePane
+  // zoom/pan viewer) instead of the fullscreen overlay — see lib/image-file.ts.
+  const IMAGE_EXTENSIONS = IMAGE_FILE_EXTENSIONS;
 
   // Text / code files SoloMD opens natively as an editor tab. A Markdown link
   // to one of these always opens in-app, regardless of the
@@ -160,39 +160,22 @@ export function useFiles() {
     ...CONVERT_CLI,
   ]);
 
-  function overlayStrings(): OverlayStrings {
-    return {
-      close: t('overlay.close'),
-      zoomIn: t('overlay.zoomIn'),
-      zoomOut: t('overlay.zoomOut'),
-      resetZoom: t('overlay.resetZoom'),
-      image: t('overlay.image'),
-      diagram: t('overlay.diagram'),
-    };
-  }
-
-  // #98 — open an image file in the fullscreen overlay viewer. Mirrors the
-  // click-to-zoom flow in Preview.vue: build an <img> from an asset:// URL
-  // and hand it to openImageOverlay(). We wait for the image to load so the
-  // overlay's fit-to-screen sees real natural dimensions.
+  // #98 — open an image file as a document tab rendered by ImagePane
+  // (zoom/pan viewer), replacing the old fullscreen-only overlay.
   async function openImageFile(path: string) {
     const fileName = path.split(/[\\/]/).pop() ?? path;
-    try {
-      const img = new Image();
-      img.src = convertFileSrc(path);
-      img.alt = fileName;
-      await new Promise<void>((resolve, reject) => {
-        if (img.complete && img.naturalWidth > 0) return resolve();
-        img.onload = () => resolve();
-        img.onerror = () => reject(new Error('image failed to load'));
-      });
-      openImageOverlay({ source: img, title: fileName, strings: overlayStrings() });
-      workspace.pushRecent(path);
-      toasts.success(`Opened ${fileName}`);
-    } catch (e) {
-      console.error('open image failed', e);
-      toasts.error(`Failed to open image: ${e}`);
-    }
+    // Images open as a document tab (TabBar entry) rendered by ImagePane.
+    // Content stays empty: the tab is always "clean", so no save path can
+    // ever clobber the image bytes.
+    tabs.openFromDisk({
+      filePath: path,
+      content: '',
+      encoding: 'UTF-8',
+      language: 'plaintext',
+      hadBom: false,
+    });
+    workspace.pushRecent(path);
+    toasts.success(`Opened ${fileName}`);
   }
 
   /** #148 — Android delivers file-manager / "Open with" / picker files as SAF
@@ -749,6 +732,9 @@ export function useFiles() {
   }
 
   async function saveTab(tab: Tab, opts: { silent?: boolean } = {}): Promise<boolean> {
+    // Image tabs are viewers, never editors: their content is always empty
+    // and saving would overwrite the image file with nothing.
+    if (isImageFileName(tab.filePath || tab.fileName)) return true;
     // #222 — the CodeMirror editor syncs doc→tab.content on a 350ms debounce.
     // A save issued inside that window (vim `:w`/`:wq`, a fast Ctrl+S) would
     // read a stale document; for `:wq` the tab then closes and the tail of the
@@ -817,6 +803,9 @@ export function useFiles() {
   }
 
   async function saveTabAs(tab: Tab): Promise<boolean> {
+    // Image tabs are viewers, never editors — saving one would be a no-op at
+    // best (Save-As dialog with empty content) and destructive at worst.
+    if (isImageFileName(tab.filePath || tab.fileName)) return true;
     const defaultName =
       deriveNameFromHeading(tab) ||
       tab.fileName ||

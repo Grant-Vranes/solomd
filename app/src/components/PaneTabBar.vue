@@ -29,6 +29,31 @@ const macChord = isMacOS();
  *  Settings shows up here (same reason CommandPalette does it). */
 const newTabChord = shortcutLabel('file.new', settings.keybindings, macChord);
 
+// The tab-bar "+" mirrors the toolbar's top-left "新建文件" button: clicking it
+// opens a dropdown with the file formats the app can create (markdown, plain
+// text, Excalidraw, draw.io) instead of always making a .md.
+const newMenuOpen = ref(false);
+const newMenuBtn = ref<HTMLElement | null>(null);
+const newMenuPos = ref<{ left: number; top: number } | null>(null);
+
+function toggleNewMenu() {
+  if (newMenuOpen.value) {
+    newMenuOpen.value = false;
+    return;
+  }
+  const r = newMenuBtn.value?.getBoundingClientRect();
+  if (r) newMenuPos.value = { left: Math.min(r.left, window.innerWidth - 240), top: r.bottom + 4 };
+  newMenuOpen.value = true;
+}
+
+function runNew(kind: 'md' | 'text' | 'excalidraw' | 'drawio') {
+  newMenuOpen.value = false;
+  if (kind === 'md') void files.newFile();
+  else if (kind === 'text') void files.newTextFile();
+  else if (kind === 'excalidraw') void files.newExcalidrawFile();
+  else void files.newDrawioFile();
+}
+
 const tabsEl = ref<HTMLElement | null>(null);
 
 // #263 / #306 — dragging a tab onto the editor splits it, and the new pane
@@ -344,10 +369,11 @@ function onMiddleUp() {
   middleDragging = false;
 }
 
-// Close context menu (and the #218 tab list) on click outside
+// Close context menu, the #218 tab list and the new-file dropdown on click outside
 function onDocClick() {
   if (ctxMenu.value) closeCtxMenu();
   if (tabListPos.value) tabListPos.value = null;
+  if (newMenuOpen.value) newMenuOpen.value = false;
 }
 
 onMounted(() => document.addEventListener('click', onDocClick));
@@ -403,7 +429,31 @@ onBeforeUnmount(() => {
       :aria-expanded="!!tabListPos"
       @click.stop="toggleTabList"
     >⌄</button>
-    <button class="tabbar__new" @click="files.newFile" :title="newTabChord ? `${t('tabMenu.newTab')} (${newTabChord})` : t('tabMenu.newTab')">+</button>
+    <button
+      ref="newMenuBtn"
+      class="tabbar__new"
+      :class="{ 'tabbar__new--open': newMenuOpen }"
+      :title="newTabChord ? `${t('tabMenu.newTab')} (${newTabChord})` : t('tabMenu.newTab')"
+      :aria-expanded="newMenuOpen"
+      @click.stop="toggleNewMenu"
+    >+<span class="tabbar__new-chevron">⌄</span></button>
+    <Teleport to="body">
+      <div
+        v-if="newMenuOpen && newMenuPos"
+        class="ctx-menu newfile-menu"
+        role="menu"
+        :style="{ left: newMenuPos.left + 'px', top: newMenuPos.top + 'px' }"
+        @click.stop
+      >
+        <button class="ctx-item newfile-menu__item" role="menuitem" @click="runNew('md')">
+          <span class="newfile-menu__label">{{ t('toolbar.newMarkdown') }}</span>
+          <span v-if="newTabChord" class="newfile-menu__shortcut">{{ newTabChord }}</span>
+        </button>
+        <button class="ctx-item newfile-menu__item" role="menuitem" @click="runNew('text')">{{ t('toolbar.newPlainText') }}</button>
+        <button class="ctx-item newfile-menu__item" role="menuitem" @click="runNew('excalidraw')">{{ t('toolbar.newExcalidraw') }}</button>
+        <button class="ctx-item newfile-menu__item" role="menuitem" @click="runNew('drawio')">{{ t('toolbar.newDrawio') }}</button>
+      </div>
+    </Teleport>
     <button
       v-if="canClosePane"
       class="tabbar__close-pane"
@@ -488,6 +538,9 @@ onBeforeUnmount(() => {
 .tabs {
   display: flex;
   flex: 1;
+  gap: 4px;
+  align-items: center;
+  padding: 0 6px;
   overflow-x: auto;
   scrollbar-width: none;
   /* Momentum + horizontal touch panning for the overflowing strip on iOS. */
@@ -500,14 +553,18 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  max-width: 200px;
-  padding: 0 10px 0 14px;
-  border-right: 1px solid var(--border);
+  max-width: 240px;
+  height: calc(100% - 6px);
+  margin: 3px 0;
+  padding: 0 8px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
   position: relative;
+  transition: background 0.12s ease, border-color 0.12s ease;
   /* Pointer-based drag (#86): block vertical pan / pinch-zoom during a drag,
      but ALLOW horizontal panning. Tabs fill the whole strip, so a touch always
      lands on a `.tab`; `touch-action: none` here meant a finger swipe could
@@ -518,22 +575,16 @@ onBeforeUnmount(() => {
 }
 .tab:hover {
   background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--text-faint) 45%, var(--border));
 }
 .tab--dragging {
   opacity: 0.5;
 }
 .tab--active {
-  background: var(--bg);
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   color: var(--text);
-}
-.tab--active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 2px;
-  background: var(--accent);
+  font-weight: 600;
 }
 .tab__name {
   overflow: hidden;
@@ -587,6 +638,36 @@ onBeforeUnmount(() => {
   padding: 0;
   font-size: 16px;
   color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+.tabbar__new:hover,
+.tabbar__new--open {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.tabbar__new-chevron {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-faint);
+  transform: translateY(3px);
+}
+.newfile-menu {
+  min-width: 200px;
+}
+.newfile-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.newfile-menu__label {
+  flex: 1;
+}
+.newfile-menu__shortcut {
+  font-size: 11px;
+  color: var(--text-faint);
 }
 .tabbar__list {
   width: 28px;

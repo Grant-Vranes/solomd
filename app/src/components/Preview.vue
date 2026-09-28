@@ -287,6 +287,69 @@ async function processWhiteboards() {
   }
 }
 
+// ```excalidraw fences — same pipeline as ```tldraw: static SVG thumbnail in
+// the preview, click-to-fullscreen when the tab is editable. The scene body
+// is plain excalidraw JSON; exportToSvg is pure (no React mount needed).
+async function processExcalidrawFences() {
+  if (!host.value) return;
+  const blocks = host.value.querySelectorAll('pre > code.language-excalidraw');
+  if (blocks.length === 0) return;
+  const [{ sceneToSvg }, { findExcalidrawFences, parseExcalidrawScene }] = await Promise.all([
+    import('../lib/excalidraw-runtime'),
+    import('../lib/excalidraw-scene'),
+  ]);
+  // Positional matching (same document order), as with tldraw fences.
+  const fences = findExcalidrawFences(props.source || '');
+  const list = Array.from(blocks);
+  for (let idx = 0; idx < list.length; idx++) {
+    const block = list[idx];
+    const pre = block.parentElement as HTMLElement | null;
+    if (!pre || pre.dataset.rendered === '1') continue;
+    pre.dataset.rendered = '1';
+    const scene = parseExcalidrawScene((block.textContent || '').trim());
+    const fence = fences[idx];
+    const wrap = document.createElement('div');
+    wrap.className = 'whiteboard-block excalidraw-block';
+    const makeEditable = (svg: string) => {
+      wrap.innerHTML = svg;
+      if (fence && props.tabId) {
+        wrap.classList.add('whiteboard-block--clickable');
+        wrap.setAttribute('role', 'button');
+        wrap.setAttribute('tabindex', '0');
+        wrap.title = t('whiteboard.openFull');
+        const openFull = () => {
+          window.dispatchEvent(
+            new CustomEvent('solomd:excalidraw-open', {
+              detail: { fenceIndex: idx, tabId: props.tabId, sceneJson: fence.sceneJson },
+            }),
+          );
+        };
+        wrap.addEventListener('click', openFull);
+        wrap.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            openFull();
+          }
+        });
+      }
+    };
+    try {
+      const svg = scene ? await sceneToSvg(scene) : null;
+      if (svg) {
+        makeEditable(svg);
+      } else {
+        wrap.classList.add('whiteboard-block--empty');
+        wrap.textContent = t('whiteboard.empty');
+      }
+      pre.replaceWith(wrap);
+    } catch {
+      wrap.classList.add('whiteboard-block--empty');
+      wrap.textContent = t('whiteboard.loadFailed');
+      pre.replaceWith(wrap);
+    }
+  }
+}
+
 // The theme is applied by processMermaid on each render pass. Diagrams already
 // on screen were drawn for the old theme and processMermaid skips them, so put
 // their source back as a fence first and let it render them again (#354).
@@ -424,6 +487,7 @@ watch(html, async () => {
   processPlantuml();
   await processMermaid();
   await processWhiteboards();
+  await processExcalidrawFences();
   attachImageOverlayHandlers();
   attachCodeCopyButtons();
 });
@@ -441,6 +505,7 @@ watch(
     processPlantuml();
     await processMermaid();
     await processWhiteboards();
+  await processExcalidrawFences();
     attachImageOverlayHandlers();
     attachCodeCopyButtons();
   },
@@ -532,6 +597,7 @@ onMounted(async () => {
   processPlantuml();
   await processMermaid();
   await processWhiteboards();
+  await processExcalidrawFences();
   attachImageOverlayHandlers();
   attachCodeCopyButtons();
   host.value?.addEventListener('click', handleLinkClick);

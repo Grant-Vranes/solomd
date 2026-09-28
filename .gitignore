@@ -70,3 +70,7 @@ dist/
 # Python bytecode from the release scripts
 __pycache__/
 *.pyc
+
+# Vendored diagrams.net webapp (fetched by app/scripts/fetch-drawio.mjs)
+app/src-tauri/resources/drawio/*
+!app/src-tauri/resources/drawio/README.md

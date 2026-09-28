@@ -606,6 +606,8 @@ export const sv: I18n = {
     zoomIn: 'Zooma in',
     zoomOut: 'Zooma ut',
     resetZoom: 'Återställ',
+
+    fit: 'Anpassa',
     image: 'Bild',
     diagram: 'Diagram',
     exportPng: 'Exportera PNG',

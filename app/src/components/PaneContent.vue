@@ -5,6 +5,8 @@ import Preview from './Preview.vue';
 import ExcalidrawPane from './ExcalidrawPane.vue';
 import DrawioPane from './DrawioPane.vue';
 import HtmlPane from './HtmlPane.vue';
+import ImagePane from './ImagePane.vue';
+import { isImageFileName } from '../lib/image-file';
 import { isExcalidrawName } from '../lib/excalidraw-scene';
 import { isDrawioName } from '../lib/drawio';
 import { isHtmlName, shouldAutoRenderHtml, loadHtmlViewMode, saveHtmlViewMode } from '../lib/html-doc';
@@ -39,6 +41,10 @@ const isDrawioTab = computed(() => isDrawioName(props.tab?.fileName) || isDrawio
 // HTML document tabs (like horseMD): render in a sandboxed iframe by default,
 // toggleable to raw source via the button in the pane's top-right corner.
 const isHtmlTab = computed(() => isHtmlName(props.tab?.fileName) || isHtmlName(props.tab?.filePath));
+
+// Image files (png/jpg/webp/svg/…) open as a real tab — they appear in the
+// TabBar like any file — but render in a zoom/pan viewer, not the editor.
+const isImageTab = computed(() => isImageFileName(props.tab?.fileName) || isImageFileName(props.tab?.filePath));
 const htmlRenderEligible = computed(() => isHtmlTab.value && shouldAutoRenderHtml(props.tab?.content || ''));
 const htmlShowSource = computed(() => {
   if (!isHtmlTab.value) return false;
@@ -61,6 +67,7 @@ const showEditor = computed(
   () =>
     !isExcalidrawTab.value &&
     !isDrawioTab.value &&
+    !isImageTab.value &&
     !(isHtmlTab.value) && // HTML tabs render via the pane--html block below
     (props.tab?.language !== 'markdown' || settings.viewMode !== 'preview'),
 );
@@ -490,6 +497,10 @@ function onPreviewSearchEvent(e: Event) {
     <div class="pane pane--drawio" v-if="isDrawioTab && tab">
       <DrawioPane :key="tab.id" :tab-id="tab.id" />
     </div>
+    <!-- Image files render as a zoomable viewer tab (see ImagePane). -->
+    <div class="pane pane--image" v-if="isImageTab && tab">
+      <ImagePane :key="tab.id" :tab-id="tab.id" />
+    </div>
     <!-- .html/.htm files render in a sandboxed iframe (like horseMD), with a
        render/source toggle button in the pane's top-right corner. -->
     <div class="pane pane--html" v-if="isHtmlTab && tab" :class="{ 'pane--html-source': htmlShowSource }">
@@ -567,6 +578,12 @@ function onPreviewSearchEvent(e: Event) {
   border-left: 1px solid var(--border);
 }
 .pane--excalidraw {
+  display: flex;
+}
+.pane--drawio {
+  display: flex;
+}
+.pane--image {
   display: flex;
 }
 .pane--html {

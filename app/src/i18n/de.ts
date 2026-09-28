@@ -606,6 +606,8 @@ export const de: I18n = {
     zoomIn: 'Vergrößern',
     zoomOut: 'Verkleinern',
     resetZoom: 'Zurücksetzen',
+
+    fit: 'Einpassen',
     image: 'Bild',
     diagram: 'Diagramm',
     exportPng: 'PNG exportieren',

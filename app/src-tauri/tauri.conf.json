@@ -89,7 +89,8 @@
     "resources": [
       "icons/file_icon.ico",
       "resources/dicts/en_US.aff",
-      "resources/dicts/en_US.dic"
+      "resources/dicts/en_US.dic",
+      "resources/drawio", "resources/drawio/**/*"
     ],
     "externalBin": [
       "binaries/solomd-mcp"

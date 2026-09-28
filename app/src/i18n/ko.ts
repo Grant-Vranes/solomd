@@ -606,6 +606,8 @@ export const ko: I18n = {
     zoomIn: '확대',
     zoomOut: '축소',
     resetZoom: '초기화',
+
+    fit: '맞춤',
     image: '이미지',
     diagram: '다이어그램',
     exportPng: 'PNG 내보내기',

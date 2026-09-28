@@ -606,6 +606,8 @@ export const ja: I18n = {
     zoomIn: '拡大',
     zoomOut: '縮小',
     resetZoom: 'リセット',
+
+    fit: '全体表示',
     image: '画像',
     diagram: '図',
     exportPng: 'PNG をエクスポート',
