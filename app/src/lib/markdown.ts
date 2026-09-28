@@ -282,6 +282,27 @@ md.renderer.rules.math_block = function (tokens, idx, options, env, self) {
   return `<div class="md-math-block" data-source-line="${line}">${html}</div>`;
 };
 
+// ---- Lazy image decoding ---------------------------------------------------
+// Long documents with many images used to stutter while scrolling: every
+// `<img>` entered the load/decode pipeline at render time. Marking images
+// `loading="lazy"` / `decoding="async"` keeps offscreen images out of the
+// decode path until they approach the viewport. Runs at token level so it
+// covers normal `![]()` images, the spaced-path variant and inline HTML imgs
+// that go through the image token (raw `<img>` HTML blocks keep their own
+// attributes — we never upgrade user-authored HTML).
+md.core.ruler.push('lazy_images', (state) => {
+  const walk = (tokens: typeof state.tokens) => {
+    for (const tok of tokens) {
+      if (tok.type === 'image') {
+        tok.attrJoin('loading', 'lazy');
+        tok.attrJoin('decoding', 'async');
+      }
+      if (tok.children) walk(tok.children);
+    }
+  };
+  walk(state.tokens);
+});
+
 md.core.ruler.push('source_line_map', (state) => {
   for (const tok of state.tokens) {
     if (!BLOCK_OPEN_TYPES.has(tok.type)) continue;

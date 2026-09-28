@@ -418,6 +418,8 @@ async function copyDiagramPng(svg: SVGElement) {
 watch(html, async () => {
   // A re-render (incl. our own math write-back) invalidates popup geometry.
   mathEdit.value = null;
+  // Block offsets changed — the scroll-position cache is stale.
+  invalidateToplineCache();
   await nextTick();
   processPlantuml();
   await processMermaid();
@@ -534,11 +536,18 @@ onMounted(async () => {
   attachCodeCopyButtons();
   host.value?.addEventListener('click', handleLinkClick);
   host.value?.addEventListener('dblclick', onPreviewDblClick);
+  // Layout changes that don't go through `html` still shift block offsets:
+  // window resizes, pane resizes, and images finishing load (they have
+  // intrinsic size only once fetched). Invalidate the snapshot on each.
+  window.addEventListener('resize', invalidateToplineCache);
+  host.value?.addEventListener('load', invalidateToplineCache, true);
 });
 
 onBeforeUnmount(() => {
   host.value?.removeEventListener('click', handleLinkClick);
   host.value?.removeEventListener('dblclick', onPreviewDblClick);
+  window.removeEventListener('resize', invalidateToplineCache);
+  host.value?.removeEventListener('load', invalidateToplineCache, true);
 });
 
 function openSearch() {
@@ -585,7 +594,8 @@ function scrollToLine(line: number) {
   const delta = target.getBoundingClientRect().top - container.getBoundingClientRect().top;
   container.scrollTo({ top: Math.max(0, container.scrollTop + delta - TOP_GAP), behavior: 'smooth' });
   flashTarget(target);
-  emit('topline', Number(target.getAttribute('data-source-line') || line));
+  lastEmittedTopline = Number(target.getAttribute('data-source-line') || line);
+  emit('topline', lastEmittedTopline);
 }
 
 /** Breathing room kept above a jumped-to block. */
@@ -605,6 +615,44 @@ function flashTarget(el: HTMLElement) {
 // the source line of the last block whose top is at/above the viewport top
 // (plus the jump gap), at most once per frame.
 let toplineRaf = 0;
+
+/**
+ * Perf (#scroll-jank) — the old onHostScroll did a full
+ * `querySelectorAll('[data-source-line]')` + one `getBoundingClientRect()`
+ * per block on EVERY scroll frame; long documents paid hundreds of layout
+ * reads per frame and the preview visibly stuttered. Instead we snapshot the
+ * block elements and their scroll-container-relative offsets once per render
+ * (html change / resize / image load) and binary-search the snapshot each
+ * frame — O(log n) integer compares, zero layout reads while scrolling.
+ */
+interface ToplineEntry {
+  el: HTMLElement;
+  line: number;
+  /** getBoundingClientRect().top - container.getBoundingClientRect().top; stable per layout. */
+  relTop: number;
+}
+let toplineCache: ToplineEntry[] | null = null;
+
+function invalidateToplineCache(): void {
+  toplineCache = null;
+}
+
+function buildToplineCache(): ToplineEntry[] {
+  toplineCache = [];
+  const article = host.value;
+  const container = article?.parentElement as HTMLElement | null;
+  if (!article || !container) return toplineCache;
+  const containerTop = container.getBoundingClientRect().top;
+  for (const el of Array.from(article.querySelectorAll<HTMLElement>('[data-source-line]'))) {
+    toplineCache.push({
+      el,
+      line: Number(el.getAttribute('data-source-line') || 0) || 0,
+      relTop: el.getBoundingClientRect().top - containerTop,
+    });
+  }
+  return toplineCache;
+}
+
 function onHostScroll() {
   if (toplineRaf) return;
   toplineRaf = requestAnimationFrame(() => {
@@ -612,15 +660,33 @@ function onHostScroll() {
     const article = host.value;
     const container = article?.parentElement as HTMLElement | null;
     if (!article || !container) return;
-    const limit = container.getBoundingClientRect().top + TOP_GAP + 2;
-    let line = 0;
-    for (const el of Array.from(article.querySelectorAll<HTMLElement>('[data-source-line]'))) {
-      if (el.getBoundingClientRect().top > limit) break;
-      line = Number(el.getAttribute('data-source-line') || 0) || line;
+    const cache = toplineCache ?? buildToplineCache();
+    if (cache.length === 0) return;
+    // Last block whose top is at/above the viewport limit, i.e.
+    // relTop - scrollTop <= TOP_GAP + 2  ⇔  relTop <= scrollTop + limit.
+    const limit = container.scrollTop + TOP_GAP + 2;
+    let lo = 0;
+    let hi = cache.length - 1;
+    let best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (cache[mid].relTop <= limit) {
+        best = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
     }
-    emit('topline', line || 1);
+    if (best === -1) return;
+    const line = cache[best].line || 1;
+    if (line !== lastEmittedTopline) {
+      lastEmittedTopline = line;
+      emit('topline', line);
+    }
   });
 }
+
+let lastEmittedTopline = 0;
 
 // #189 — copying rendered content into mail clients / rich editors dropped
 // the table borders: the copied HTML referenced our stylesheet classes,
