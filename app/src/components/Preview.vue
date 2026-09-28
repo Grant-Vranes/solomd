@@ -47,6 +47,14 @@ const tabs = useTabsStore();
 const files = useFiles();
 const { t } = useI18n();
 const host = ref<HTMLDivElement | null>(null);
+
+// Per-tab scroll memory (runtime-only). The preview is a single reused
+// component: switching tabs swaps `source`, re-renders the whole document
+// and drops the scroll to the top. Remember each tab's scrollTop here and
+// restore it after the re-render settles, so reading position survives
+// tab switches in preview / split mode.
+const previewScrollMemory = new Map<string, number>();
+const PREVIEW_SCROLL_MEMORY_LIMIT = 50;
 const searchOpen = ref(false);
 const searchRef = ref<InstanceType<typeof PreviewSearch> | null>(null);
 
@@ -478,12 +486,56 @@ async function copyDiagramPng(svg: SVGElement) {
   }
 }
 
+// Restore the remembered scroll position for the incoming tab. Called after
+// the DOM has re-rendered. Async blocks (mermaid / images) grow the page
+// later, so re-assert briefly — but never fight a scroll the user makes.
+let pendingScrollRestore: number | null = null;
+let restoreCancelled = false;
+function maybeRestoreTabScroll() {
+  if (pendingScrollRestore == null || !host.value) return;
+  const st = pendingScrollRestore;
+  pendingScrollRestore = null;
+  restoreCancelled = false;
+  host.value.scrollTop = st;
+  const reassert = () => {
+    if (restoreCancelled || !host.value) return;
+    if (st > 50 && host.value.scrollTop < 10) host.value.scrollTop = st;
+  };
+  requestAnimationFrame(reassert);
+  setTimeout(reassert, 120);
+  setTimeout(reassert, 400);
+}
+
+// Snapshot the outgoing tab's scroll position the moment the tab id changes
+// — at that point the DOM still holds the old document.
+watch(
+  () => props.tabId,
+  (newId, oldId) => {
+    restoreCancelled = true;
+    if (oldId && host.value) {
+      if (previewScrollMemory.size >= PREVIEW_SCROLL_MEMORY_LIMIT && !previewScrollMemory.has(oldId)) {
+        const oldest = previewScrollMemory.keys().next().value;
+        if (oldest !== undefined) previewScrollMemory.delete(oldest);
+      }
+      previewScrollMemory.set(oldId, host.value.scrollTop);
+    }
+    pendingScrollRestore = newId ? previewScrollMemory.get(newId) ?? null : null;
+    if (pendingScrollRestore != null) {
+      // html may not change when two tabs share identical content; restore
+      // directly after the flush in that case. The html watcher path covers
+      // the normal re-render.
+      nextTick(() => maybeRestoreTabScroll());
+    }
+  },
+);
+
 watch(html, async () => {
   // A re-render (incl. our own math write-back) invalidates popup geometry.
   mathEdit.value = null;
   // Block offsets changed — the scroll-position cache is stale.
   invalidateToplineCache();
   await nextTick();
+  maybeRestoreTabScroll();
   processPlantuml();
   await processMermaid();
   await processWhiteboards();

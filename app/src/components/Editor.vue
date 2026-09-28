@@ -3085,6 +3085,37 @@ function buildExtensions() {
   ];
 }
 
+/** Re-apply every settings-driven compartment to the current view. Used
+ *  after restoring a cached per-tab `EditorState`: that state froze the
+ *  extension set captured when the tab was last active, and settings (theme,
+ *  font size, wrap, vim, …) may have changed since. Values mirror
+ *  `buildExtensions()` — keep the two in sync. */
+function reconfigureCompartments() {
+  if (!view) return;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Compartment.of's
+  // per-compartment generics don't unify into one array type cleanly.
+  const effects: any[] = [
+    cursorCompartment.of(drawSelection({ cursorBlinkRate: settings.solidCursor ? 0 : 1200 })),
+    activeLineCompartment.of(activeLineExtension(settings.highlightCurrentLine)),
+    lineNumCompartment.of(settings.showLineNumbers ? lineNumbers() : []),
+    wrapCompartment.of(settings.wordWrap ? EditorView.lineWrapping : []),
+    langCompartment.of(props.tab.language === 'markdown' ? [markdownExt()] : []),
+    richCompartment.of(richExtensionsFor(props.tab)),
+    themeCompartment.of(cmThemeFor(settings.theme, !!settings.customCssPath)),
+    vimCompartment.of(settings.vimMode ? vim() : []),
+    fontSizeCompartment.of(fontSizeTheme(settings.fontSize, settings.fontFamily)),
+    spellCheckCompartment.of(spellCheckExt(props.spellCheck)),
+    focusCompartment.of(props.focusMode ? focusModeExtension() : []),
+    typewriterCompartment.of(props.typewriterMode ? typewriterModeExtension() : []),
+    foldCompartment.of(foldExtensionFor(settings.foldingEnabled)),
+  ];
+  if (props.tab.language === 'markdown' && !IS_APP_STORE_BUILD) {
+    effects.push(aiKeyCompartment.of(aiRewriteExtension(currentAiRewriteKey())));
+    effects.push(slashCompartment.of(slashExt()));
+  }
+  view.dispatch({ effects });
+}
+
 function maybeRestoreSession() {
   const saved = readSession(props.tab.id);
   if (!saved || saved === '' || props.tab.content !== '') return;
@@ -3542,6 +3573,15 @@ onBeforeUnmount(() => {
 // `setState` reset it to 0.
 const tabCaretMemory = new Map<string, { caret: number; scrollTop: number }>();
 
+// Per-tab full editor-state memory (CodeMirror path only). Caching the whole
+// `EditorState` — instead of recreating it with `EditorState.create` on every
+// tab switch — keeps the document parsed, the undo/redo history, the folds
+// and the selection intact, so switching back to a tab restores it verbatim
+// instead of feeling like a fresh load. Bounded (oldest evicted) because each
+// entry pins a full document string.
+const tabStateMemory = new Map<string, { state: EditorState; scrollTop: number }>();
+const TAB_STATE_MEMORY_LIMIT = 50;
+
 // #169 (Windows) — one synchronous scrollTop assignment is not enough on the
 // plain paths: focusPlainEditor() focuses on nextTick, and the browser then
 // scrolls the caret back into view — line 1 when the user only scrolled and
@@ -3628,6 +3668,40 @@ watch(
       return;
     }
     if (!view) return;
+    // Cache the outgoing tab's full editor state (parsed doc, undo/redo
+    // history, folds, selection) so switching back restores it verbatim.
+    if (oldId) {
+      if (tabStateMemory.size >= TAB_STATE_MEMORY_LIMIT && !tabStateMemory.has(oldId)) {
+        const oldest = tabStateMemory.keys().next().value;
+        if (oldest !== undefined) tabStateMemory.delete(oldest);
+      }
+      tabStateMemory.set(oldId, { state: view.state, scrollTop: view.scrollDOM.scrollTop });
+    }
+    const cached = newId ? tabStateMemory.get(newId) : undefined;
+    if (cached && cached.state.doc.toString() === props.tab.content) {
+      // Fast path: the cached state still matches the store's content —
+      // restore it wholesale. No re-parse, history and folds survive.
+      view.setState(cached.state);
+      // The cached state froze the extension set from when this tab was
+      // last active; re-apply current settings-driven compartments.
+      reconfigureCompartments();
+      maybeRestoreSession();
+      const st = cached.scrollTop;
+      view.scrollDOM.scrollTop = st;
+      // Same reassert dance as below: async widget renders can yank the
+      // viewport back toward the top right after the restore.
+      const reassert = () => {
+        if (view && st > 50 && view.scrollDOM.scrollTop < 10) view.scrollDOM.scrollTop = st;
+      };
+      requestAnimationFrame(reassert);
+      setTimeout(reassert, 120);
+      setTimeout(reassert, 400);
+      return;
+    }
+    // Slow path: no cached state, or the document changed behind our back
+    // (external edit / disk read adopted into the store). Rebuild from
+    // scratch — the store's content is the source of truth here.
+    if (cached) tabStateMemory.delete(newId);
     view.setState(
       EditorState.create({
         doc: props.tab.content,
