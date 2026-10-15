@@ -1,6 +1,6 @@
 # SoloMD
 
-> Edytor, w którym mieszkają agenty.
+> Edytor, w którym mieszkają agenty. 简单
 
 [![Latest release](https://img.shields.io/github/v/release/zhitongblog/solomd)](https://github.com/zhitongblog/solomd/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/zhitongblog/solomd?color=orange)](LICENSE)
@@ -30,7 +30,7 @@ Zbudowane na Tauri 2 + Vue 3 + CodeMirror 6. Universal macOS dmg ~32 MB. Darmowe
 
 ## Trzy połówki jednego produktu
 
-**Edytor.** Edycja WYSIWYG w stylu live (Typora), zakładki + podzielone panele, KaTeX + Mermaid, wstawianie obrazów do `_assets/`, tryb pokazu slajdów (`⌘⌥P`), tryb Vim, korekta Hunspell + CJK, wyszukiwanie semantyczne (`⌘⇧F`), wikilinki + backlinki, eksport Pandoc. Kodowania CJK (GBK / Big5 / Shift-JIS) wykrywane automatycznie.
+**Edytor.** Edycja WYSIWYG w stylu live (Typora), zakładki + podzielone panele, KaTeX + Mermaid, wstawianie obrazów do `_assets/`, tryb pokazu slajdów (`⌘⌥P`), tryb Vim, korekta Hunspell + CJK, wyszukiwanie semantyczne (`⌘⇧F`), wikilinki + backlinki, eksport Pandoc. Kodowania CJK (GBK / Big5 / Shift-JIS) wykrywane automatycznie. 
 
 **Endpoint.** Dołączony plik binarny `solomd-mcp` udostępnia ten sam vault każdemu klientowi MCP — domyślnie 13 narzędzi, w tym 5 specyficznych dla SoloMD (`autogit_log`, `autogit_diff`, `autogit_rollback`, `sync_status`, `share_url`), których nie ma żaden inny serwer Markdown. v4.0 dodaje federację `--workspace path1 --workspace path2` — jedna sesja MCP, wiele vaultów. Plus CLI `solomd agent <prompt>`, które przekazuje do Claude Code / Codex CLI z prekonfigurowanym MCP.
 

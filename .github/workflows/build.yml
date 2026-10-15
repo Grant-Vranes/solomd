@@ -1,0 +1,68 @@
+name: Build Installers
+
+on:
+  # 推送 tag 时触发打包，如 v1.0.0
+  push:
+    tags:
+      - 'v*'
+  # 也支持手动触发
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm   # 使用 yarn 或 pnpm 时改为对应值
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ---------- macOS 代码签名（可选，没有证书可删除此段） ----------
+      # - name: Import macOS certificate
+      #   env:
+      #     MAC_CERTIFICATE: ${{ secrets.MAC_CERTIFICATE }}        # base64 编码的 .p12
+      #     MAC_CERTIFICATE_PWD: ${{ secrets.MAC_CERTIFICATE_PWD }}
+      #   run: |
+      #     echo $MAC_CERTIFICATE | base64 --decode > certificate.p12
+      #     security create-keychain -p build build.keychain
+      #     security default-keychain -s build.keychain
+      #     security unlock-keychain -p build.keychain build.keychain
+      #     security import certificate.p12 -k build.keychain -P $MAC_CERTIFICATE_PWD -T /usr/bin/codesign
+      #     security set-key-partition-list -S apple-tool:,apple: -s -k build.keychain build.keychain
+
+      - name: Build & Package
+        env:
+          # electron-builder 发布到 GitHub Release 用
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Windows 签名（可选）：
+          # CSC_LINK: ${{ secrets.WIN_CERTIFICATE }}
+          # CSC_KEY_PASSWORD: ${{ secrets.WIN_CERTIFICATE_PWD }}
+          # macOS 签名（可选）：
+          # CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
+          # CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PWD }}
+          # APPLE_ID: ${{ secrets.APPLE_ID }}
+          # APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: npx electron-builder --publish always
+
+      # 如果不用 --publish always，而是想直接上传 artifacts，打开下面这段：
+      # - name: Upload artifacts
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: installers-${{ matrix.os }}
+      #     path: |
+      #       dist/*.exe
+      #       dist/*.dmg
+      #       dist/*.AppImage
+      #       dist/*.deb
+      #       dist/*.rpm
