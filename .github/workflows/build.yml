@@ -10,9 +10,20 @@ on:
 
 jobs:
   build:
+    permissions:
+      contents: write
     strategy:
+      fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -23,46 +34,42 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm   # 使用 yarn 或 pnpm 时改为对应值
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
 
-      # ---------- macOS 代码签名（可选，没有证书可删除此段） ----------
-      # - name: Import macOS certificate
-      #   env:
-      #     MAC_CERTIFICATE: ${{ secrets.MAC_CERTIFICATE }}        # base64 编码的 .p12
-      #     MAC_CERTIFICATE_PWD: ${{ secrets.MAC_CERTIFICATE_PWD }}
-      #   run: |
-      #     echo $MAC_CERTIFICATE | base64 --decode > certificate.p12
-      #     security create-keychain -p build build.keychain
-      #     security default-keychain -s build.keychain
-      #     security unlock-keychain -p build.keychain build.keychain
-      #     security import certificate.p12 -k build.keychain -P $MAC_CERTIFICATE_PWD -T /usr/bin/codesign
-      #     security set-key-partition-list -S apple-tool:,apple: -s -k build.keychain build.keychain
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+
+      # Linux 打包所需系统依赖
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile
 
       - name: Build & Package
+        uses: tauri-apps/tauri-action@v0
         env:
-          # electron-builder 发布到 GitHub Release 用
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Windows 签名（可选）：
-          # CSC_LINK: ${{ secrets.WIN_CERTIFICATE }}
-          # CSC_KEY_PASSWORD: ${{ secrets.WIN_CERTIFICATE_PWD }}
-          # macOS 签名（可选）：
-          # CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
-          # CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PWD }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: npx electron-builder --publish always
-
-      # 如果不用 --publish always，而是想直接上传 artifacts，打开下面这段：
-      # - name: Upload artifacts
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: installers-${{ matrix.os }}
-      #     path: |
-      #       dist/*.exe
-      #       dist/*.dmg
-      #       dist/*.AppImage
-      #       dist/*.deb
-      #       dist/*.rpm
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          # 打 tag 时发布到 GitHub Release
+          tagName: ${{ github.ref_name }}
+          releaseName: 'SoloMD v__VERSION__'
+          releaseDraft: false
+          prerelease: false
+          args: --target ${{ matrix.target }}
