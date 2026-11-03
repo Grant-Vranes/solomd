@@ -1,12 +1,19 @@
 pub mod app_build;
 // Offline diagrams.net (drawio) editor path resolution.
 pub mod drawio;
+// App Store builds ask for a rating with Apple's own sheet (iOS starts here).
+pub mod store_review;
+pub mod iap;
+pub mod ios_folder;
 pub mod commands;
+pub mod convert;
 // Image-bed (图床) upload: PicGo / shell command / sm.ms / S3-compatible / GitHub.
 pub mod image_upload;
 pub mod search;
 pub mod workspace_index;
 pub mod spellcheck;
+// LanguageTool grammar / style checking — local server, Premium or public API.
+pub mod languagetool;
 // #102 — cross-platform AI key storage (OS keyring + Android encrypted-file
 // fallback). Declared before ai_proxy, which delegates to it.
 pub mod ai_keystore;
@@ -26,6 +33,9 @@ pub mod rag;
 // v2.4 inbound HTTP capture endpoint — production-grade, opt-in via Settings.
 pub mod capture_endpoint;
 pub mod quick_capture;
+// Window-label classification for the close / quit / relaunch lifecycle in
+// runner.rs; declared here too so `cargo test --lib` covers it.
+pub mod window_labels;
 // v4.0 — public REST API mirroring the agent_tools surface for non-MCP
 // clients (Alfred / Raycast / n8n / shell scripts). Localhost-only,
 // bearer-token auth, opt-in via Settings → Integrations. Same wire shape
@@ -52,6 +62,8 @@ pub mod github_sync;
 // v2.6.1 cloud-folder detection (iCloud / Dropbox / OneDrive / Google Drive)
 // + cross-device session restore via per-device JSON.
 pub mod cloud_folder;
+// #458 — WebDAV workspace sync (Nutstore / Nextcloud / AList / Synology).
+pub mod webdav_sync;
 // v2.6.3 workspace-level E2EE: passphrase → Argon2id → key in keyring;
 // XChaCha20-Poly1305 over each .md before push, decrypt after pull.
 pub mod crypto;
@@ -141,11 +153,24 @@ pub fn run() {
     let builder = builder.manage(watcher::WatcherState::new());
     #[cfg(not(target_os = "android"))]
     let builder = builder.manage(recipe_runner::RecipesState::new());
-    builder
+    let app = builder
         .setup(|app| {
             #[cfg(debug_assertions)]
             {
                 dev_bridge::spawn(app.handle().clone());
+            }
+            // iOS: reopen the security scope of the folder picked last time
+            // before the UI lists it — without it the first read fails. And
+            // catch documents opened in place from the Files app before tao
+            // drops their security scope (setup runs inside
+            // didFinishLaunching, ahead of a cold launch's open-URL call).
+            #[cfg(any(target_os = "ios", target_os = "macos"))]
+            {
+                let _ = ios_folder::ios_restore_folder(app.handle().clone());
+            }
+            #[cfg(target_os = "ios")]
+            {
+                ios_folder::hook_open_url();
             }
             // Show the window only after first paint to suppress the
             // position-jump flicker on Windows (issue #60). The window
@@ -177,12 +202,26 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_build::app_build_info,
             drawio::drawio_editor_path,
+            store_review::request_store_review,
+            iap::iap_get_state,
+            iap::iap_fetch_products,
+            iap::iap_purchase,
+            iap::iap_restore,
+            ios_folder::ios_pick_folder,
+            ios_folder::macos_bookmark_folder,
+            ios_folder::ios_restore_folder,
+            ios_folder::ios_set_appearance,
+            ios_folder::ios_scoped_files,
             commands::read_file,
             commands::read_binary_file,
+            commands::fetch_image_bytes,
             commands::write_file,
             commands::write_binary_file,
             commands::print_webview,
+            commands::print_webview_to_pdf,
             commands::copy_file,
+            commands::download_and_install_update,
+            convert::convert_file_to_markdown,
             storage_android::android_has_all_files_access,
             storage_android::android_request_all_files_access,
             storage_android::android_system_insets,
@@ -194,7 +233,10 @@ pub fn run() {
             saf_android::saf_tree_name,
             saf_android::saf_list,
             saf_android::saf_read,
+            saf_android::saf_read_base64,
             saf_android::saf_write,
+            saf_android::saf_write_base64,
+            saf_android::saf_read_content_uri_base64,
             saf_android::saf_create,
             saf_android::saf_delete,
             image_upload::upload_image,
@@ -203,6 +245,8 @@ pub fn run() {
             commands::fs_create_dir,
             commands::fs_delete,
             commands::fs_dir_exists,
+            commands::fs_file_exists,
+            commands::webview_runtime_version,
             commands::fs_rename,
             commands::fs_move,
             commands::fs_list_dirs,
@@ -222,6 +266,13 @@ pub fn run() {
             spellcheck::spellcheck_load_user_dict,
             spellcheck::spellcheck_list_dicts,
             spellcheck::spellcheck_dicts_dir,
+            languagetool::languagetool_check,
+            languagetool::languagetool_detect,
+            languagetool::languagetool_set_api_key,
+            languagetool::languagetool_has_api_key,
+            languagetool::languagetool_clear_api_key,
+            languagetool::languagetool_words_add,
+            languagetool::languagetool_words_list,
             ai_proxy::ai_set_key,
             ai_proxy::ai_has_key,
             ai_proxy::ai_clear_key,
@@ -342,6 +393,15 @@ pub fn run() {
             cloud_folder::session_save,
             cloud_folder::session_load,
             cloud_folder::session_list_others,
+            webdav_sync::webdav_test_connection,
+            webdav_sync::webdav_push_workspace,
+            webdav_sync::webdav_pull_workspace,
+            webdav_sync::cloud_vault_push_workspace,
+            webdav_sync::cloud_vault_pull_workspace,
+            webdav_sync::cloud_api_start_device_auth,
+            webdav_sync::cloud_api_poll_device_auth,
+            webdav_sync::cloud_api_push_workspace,
+            webdav_sync::cloud_api_pull_workspace,
             crypto::crypto_status,
             crypto::crypto_set_passphrase,
             crypto::crypto_clear_passphrase,
@@ -395,6 +455,12 @@ pub fn run() {
             commands::update_frontmatter_property,
             commands::delete_frontmatter_property,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    // iOS: TaoSceneDelegate exists now (build created the event loop) and the
+    // first scene connects inside App::run — so this is the only window to
+    // wrap its open-URL handling (see ios_folder::hook_scene_delegate).
+    #[cfg(target_os = "ios")]
+    ios_folder::hook_scene_delegate();
+    app.run(|_, _| {});
 }

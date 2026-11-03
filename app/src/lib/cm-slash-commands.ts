@@ -40,6 +40,7 @@ import {
   SLASH_BLOCKS,
   filterBlocks,
   expandSnippet,
+  indentExpandedSnippet,
   type SlashBlock,
 } from './slash-blocks';
 
@@ -341,10 +342,16 @@ function insertBlock(view: EditorView, state: SlashState, block: SlashBlock): vo
   // trigger; we don't have the original selection any more. So treat
   // ${selection} as empty here. Wrappers fall back to ${cursor}-style
   // placement via expandSnippet.
-  const expanded = expandSnippet(block.snippet, '');
+  const line = view.state.doc.lineAt(replaceFrom);
+  const linePrefix = view.state.doc.sliceString(line.from, replaceFrom);
+  const indent = /^[ \t]+$/.test(linePrefix) ? linePrefix : '';
+  const expanded = indentExpandedSnippet(expandSnippet(block.snippet, ''), indent);
   view.dispatch({
     changes: { from: replaceFrom, to: replaceTo, insert: expanded.text },
-    selection: { anchor: replaceFrom + expanded.cursorOffset },
+    selection: {
+      anchor: replaceFrom + expanded.cursorOffset,
+      head: replaceFrom + expanded.cursorOffset + (expanded.selectionLength ?? 0),
+    },
     effects: setSlashState.of(null),
     scrollIntoView: true,
   });

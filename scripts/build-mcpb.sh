@@ -62,7 +62,7 @@ echo "==> Signing and notarizing"
 codesign --force --options runtime --timestamp \
   --sign "$APPLE_SIGNING_IDENTITY" "$WORK/b/server/solomd-mcp"
 ditto -c -k "$WORK/b/server/solomd-mcp" "$WORK/notarize.zip"
-xcrun notarytool submit "$WORK/notarize.zip" "${ASC_NOTARY_AUTH[@]}" --wait \
+xcrun notarytool submit "$WORK/notarize.zip" "${ASC_NOTARY_AUTH[@]}" --no-s3-acceleration --wait \
   | tee "$WORK/notary.log" | grep -E "status:|id:" | tail -2
 grep -q "status: Accepted" "$WORK/notary.log" || { echo "notarization not accepted" >&2; exit 1; }
 
@@ -86,7 +86,11 @@ mkdir -p "$WORK/ws"
 VER="$VER" python3 - "$WORK" <<'PY'
 import json, os, subprocess, sys
 work = sys.argv[1]
-p = subprocess.Popen([f"{work}/b/server/solomd-mcp", "--workspace", f"{work}/ws"],
+# Run it the way the bundle runs: outside any source checkout and without
+# SOLOMD_EXPORT_SCRIPT, so export_note (Node + the repo's export script)
+# is left out exactly as it is for people who install the .mcpb.
+env = {k: v for k, v in os.environ.items() if k != "SOLOMD_EXPORT_SCRIPT"}
+p = subprocess.Popen([f"{work}/b/server/solomd-mcp", "--workspace", f"{work}/ws"], cwd=work, env=env,
                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
 def call(o):
     p.stdin.write(json.dumps(o) + "\n"); p.stdin.flush()

@@ -137,7 +137,7 @@ fn keyring_user_for(workspace: &Path) -> String {
     workspace.to_string_lossy().to_string()
 }
 
-fn random_bytes(n: usize) -> Vec<u8> {
+pub(crate) fn random_bytes(n: usize) -> Vec<u8> {
     let mut buf = vec![0u8; n];
     rand::thread_rng().fill_bytes(&mut buf);
     buf
@@ -149,11 +149,11 @@ fn _ensure_rng_used() {
     let _ = random_bytes(1);
 }
 
-fn hex_encode(b: &[u8]) -> String {
+pub(crate) fn hex_encode(b: &[u8]) -> String {
     b.iter().map(|x| format!("{:02x}", x)).collect()
 }
 
-fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     if s.len() % 2 != 0 {
         return Err("hex string has odd length".into());
     }
@@ -181,7 +181,7 @@ fn save_config(workspace: &Path, cfg: &EncryptionConfig) -> Result<(), String> {
     fs::write(&path, body).map_err(|e| e.to_string())
 }
 
-fn derive_key(passphrase: &str, salt: &[u8], params: &KdfParams) -> Result<[u8; 32], String> {
+pub(crate) fn derive_key(passphrase: &str, salt: &[u8], params: &KdfParams) -> Result<[u8; 32], String> {
     let argon = Argon2::new(
         Algorithm::Argon2id,
         Version::V0x13,
@@ -352,8 +352,16 @@ pub fn crypto_status(folder: String) -> Result<CryptoStatus, String> {
 /// the key. Idempotent — re-running with the SAME passphrase succeeds
 /// without rotating the salt; a DIFFERENT passphrase fails (we never
 /// silently rotate).
+/// Off the main thread: the keychain can wait on a macOS access prompt (see
+/// `ai_proxy::ai_set_key`). Rust callers use the `_blocking` form.
 #[tauri::command]
-pub fn crypto_set_passphrase(folder: String, passphrase: String) -> Result<(), String> {
+pub async fn crypto_set_passphrase(folder: String, passphrase: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crypto_set_passphrase_blocking(folder, passphrase))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+pub fn crypto_set_passphrase_blocking(folder: String, passphrase: String) -> Result<(), String> {
     if passphrase.is_empty() {
         return Err("passphrase cannot be empty".into());
     }
@@ -408,8 +416,16 @@ pub fn crypto_set_passphrase(folder: String, passphrase: String) -> Result<(), S
     Ok(())
 }
 
+/// Off the main thread: the keychain can wait on a macOS access prompt (see
+/// `ai_proxy::ai_set_key`). Rust callers use the `_blocking` form.
 #[tauri::command]
-pub fn crypto_clear_passphrase(folder: String) -> Result<(), String> {
+pub async fn crypto_clear_passphrase(folder: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crypto_clear_passphrase_blocking(folder))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+pub fn crypto_clear_passphrase_blocking(folder: String) -> Result<(), String> {
     let path = PathBuf::from(&folder);
     let _ = fs::remove_file(key_marker_path(&path));
     delete_key_from_keyring(&path)
@@ -680,7 +696,7 @@ mod tests {
         fs::write(ws.join(".solomd/sync.json"), b"{}").unwrap();
 
         let folder = ws.to_string_lossy().to_string();
-        crypto_set_passphrase(folder.clone(), "hunter2".into()).unwrap();
+        crypto_set_passphrase_blocking(folder.clone(), "hunter2".into()).unwrap();
         let shadow = crypto_encrypt_for_push_inner(folder.clone()).unwrap();
         let shadow_dir = PathBuf::from(&shadow);
         assert!(shadow_dir.join("notes/a.md.enc").exists());
@@ -699,9 +715,9 @@ mod tests {
     fn second_set_passphrase_with_wrong_word_fails() {
         let ws = fresh("ws-pp");
         let folder = ws.to_string_lossy().to_string();
-        crypto_set_passphrase(folder.clone(), "correct".into()).unwrap();
-        let bad = crypto_set_passphrase(folder, "guess".into());
+        crypto_set_passphrase_blocking(folder.clone(), "correct".into()).unwrap();
+        let bad = crypto_set_passphrase_blocking(folder, "guess".into());
         assert!(bad.is_err());
-        let _ = crypto_clear_passphrase(ws.to_string_lossy().to_string());
+        let _ = crypto_clear_passphrase_blocking(ws.to_string_lossy().to_string());
     }
 }

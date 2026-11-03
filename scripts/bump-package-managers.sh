@@ -139,11 +139,20 @@ bump_winget() {
     echo "winget   already has $VER"
     return 0
   fi
-  GITHUB_TOKEN="$(gh auth token)" komac update zhitong.SoloMD --version "$VER" \
+  # Until the first PR merges the package doesn't exist upstream and komac fails;
+  # judge by komac's own output, not by reaching the end of this function.
+  local out
+  out="$(GITHUB_TOKEN="$(gh auth token)" komac update zhitong.SoloMD --version "$VER" \
     --urls "$DL/SoloMD_${VER}_x64_en-US.msi" "$DL/SoloMD_${VER}_arm64_en-US.msi" \
     --release-notes-url "https://github.com/$REPO/releases/tag/$TAG" \
-    --submit < /dev/null 2>&1 | grep -E "Successfully|pull/|rror" || true
-  echo "winget   PR opened for $VER — the winget bot validates (installs it on a VM) and merges"
+    --submit < /dev/null 2>&1)" || true
+  if grep -q "pull/" <<<"$out"; then
+    echo "winget   PR opened for $VER: $(grep -o 'https://github.com/[^ ]*pull/[0-9]*' <<<"$out" | head -1)"
+  else
+    echo "winget   FAILED for $VER — komac said:" >&2
+    tail -5 <<<"$out" >&2
+    return 1
+  fi
 }
 
 check_scoop() {
@@ -159,12 +168,16 @@ check_scoop() {
   fi
 }
 
+# One channel failing (winget, until its first PR merges) must not skip the
+# channels after it; the exit status still reports that something failed.
+rc=0
 for ch in "${CHANNELS[@]}"; do
   case "$ch" in
-    brew)   bump_brew ;;
-    choco)  bump_choco ;;
-    winget) bump_winget ;;
-    scoop)  check_scoop ;;
+    brew)   bump_brew || rc=1 ;;
+    choco)  bump_choco || rc=1 ;;
+    winget) bump_winget || rc=1 ;;
+    scoop)  check_scoop || rc=1 ;;
     *) echo "unknown channel: $ch" >&2; exit 1 ;;
   esac
 done
+exit $rc

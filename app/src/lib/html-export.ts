@@ -11,8 +11,16 @@ import { renderMarkdown, extractImageRoot } from './markdown';
 import { inlineLocalImages, rewriteLinkUrls, rewriteImageUrls, type BinaryReader } from './image-resolve';
 import { inlineDiagramsInHtml } from './diagram-export';
 import { hasKatex, standaloneKatexCss } from './katex-standalone';
+import { loadRenderDeps } from './render-deps';
+import { buildExportCustomCss, getActiveCustomCss } from './custom-theme';
 
-export const HTML_TEMPLATE = (title: string, body: string, headCss = '') => `<!doctype html>
+export const HTML_TEMPLATE = (
+  title: string,
+  body: string,
+  headCss = '',
+  customCss = '',
+  bodyClasses = '',
+) => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -26,15 +34,15 @@ ${headCss ? `<style>${headCss}</style>\n` : ''}<style>
      gray and links a sober blue. Deliberately no dark-mode variant: the file
      is a document, and mermaid diagrams are rendered for a light page. */
   :root {
-    --accent-rule: #3d444d;
-    --link: #0b5cad;
+    --accent-rule: var(--md-h1, var(--accent, #3d444d));
+    --link: var(--accent-text, var(--md-link, #0b5cad));
     --link-soft: #c9dcf0;
-    --ink: #1f2328;
-    --ink-muted: #59636e;
-    --rule: #e4e6e9;
-    --paper: #ffffff;
-    --code-bg: #f6f8fa;
-    --code-key: #cf222e;
+    --ink: var(--text, #1f2328);
+    --ink-muted: var(--text-muted, #59636e);
+    --rule: var(--border, #e4e6e9);
+    --paper: var(--bg, #ffffff);
+    --code-bg: var(--fill-1, var(--md-code-bg, #f6f8fa));
+    --code-key: var(--syn-keyword, #cf222e);
     --row-alt: #f9fafb;
     --thead-bg: #f3f4f6;
     --quote-bg: #f9fafb;
@@ -66,18 +74,20 @@ ${headCss ? `<style>${headCss}</style>\n` : ''}<style>
   h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }
   h1 {
     font-size: 2.15em;
+    color: var(--md-h1, var(--ink));
     border-bottom: 2px solid var(--accent-rule);
     padding-bottom: .35em;
     letter-spacing: -0.01em;
   }
   h2 {
     font-size: 1.55em;
+    color: var(--md-h2, var(--ink));
     border-bottom: 1px solid var(--rule);
     padding-bottom: .25em;
   }
-  h3 { font-size: 1.25em; }
-  h4 { font-size: 1.05em; }
-  h5, h6 { font-size: 1em; color: var(--ink-muted); }
+  h3 { font-size: 1.25em; color: var(--md-h3, var(--ink)); }
+  h4 { font-size: 1.05em; color: var(--md-h4, var(--ink)); }
+  h5, h6 { font-size: 1em; color: var(--md-h5, var(--ink-muted)); }
   p { margin: .9em 0; }
   a {
     color: var(--link);
@@ -85,8 +95,8 @@ ${headCss ? `<style>${headCss}</style>\n` : ''}<style>
     border-bottom: 1px solid var(--link-soft);
   }
   a:hover { border-bottom-color: var(--link); }
-  strong { color: var(--ink); }
-  em { color: var(--ink); }
+  strong { color: var(--md-strong, var(--ink)); }
+  em { color: var(--md-em, var(--ink)); }
   code {
     font-family: "JetBrains Mono", "SF Mono", "Menlo", "Consolas",
       "Liberation Mono", monospace;
@@ -94,7 +104,7 @@ ${headCss ? `<style>${headCss}</style>\n` : ''}<style>
     background: var(--code-bg);
     padding: .15em .45em;
     border-radius: 4px;
-    color: var(--ink);
+    color: var(--md-code, var(--ink));
   }
   pre {
     background: var(--code-bg);
@@ -108,7 +118,7 @@ ${headCss ? `<style>${headCss}</style>\n` : ''}<style>
   pre code {
     background: transparent;
     padding: 0;
-    color: var(--ink);
+    color: var(--md-code, var(--ink));
     font-size: .88em;
   }
   pre code .hljs-keyword,
@@ -119,7 +129,7 @@ ${headCss ? `<style>${headCss}</style>\n` : ''}<style>
     background: var(--quote-bg);
     margin: 1.4em 0;
     padding: .5em 1.2em;
-    color: var(--ink-muted);
+    color: var(--md-quote, var(--ink-muted));
     font-style: italic;
     border-radius: 0 4px 4px 0;
   }
@@ -137,6 +147,10 @@ ${headCss ? `<style>${headCss}</style>\n` : ''}<style>
     border: 1px solid var(--rule);
     padding: 8px 14px;
     text-align: left;
+    /* #370 — a long unbreakable run breaks inside its cell instead of pushing
+       the table past the page (and off the paper when printed). */
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
   /* #271 — short cells stay on one line (see markdown.ts table_short_cells). */
   .cell-nowrap { white-space: nowrap; }
@@ -149,7 +163,7 @@ ${headCss ? `<style>${headCss}</style>\n` : ''}<style>
   tbody tr:nth-child(even) { background: var(--row-alt); }
   hr {
     border: none;
-    border-top: 1px solid var(--rule);
+    border-top: 1px solid var(--md-hr, var(--rule));
     margin: 2.4em 0;
   }
   img {
@@ -158,14 +172,53 @@ ${headCss ? `<style>${headCss}</style>\n` : ''}<style>
     margin: 1.2em 0;
     box-shadow: 0 1px 3px rgba(0, 0, 0, .08);
   }
-  .katex-display { overflow-x: auto; overflow-y: hidden; margin: 1.2em 0; }
+  .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.5em 0; margin: 0.7em 0; }
   .mermaid-block, .plantuml-block { display: flex; justify-content: center; margin: 1.5em 0; }
   .mermaid-block svg, .plantuml-block svg { max-width: 100%; height: auto; }
   .plantuml-block img { box-shadow: none; border-radius: 0; margin: 0; }
   pre.mermaid-error { color: #b42318; white-space: pre-wrap; }
-</style>
+  /* #454 — code block soft-wrap & line numbers in standalone HTML export */
+  .preview-content.cb-wrap-on pre {
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    overflow-x: visible;
+  }
+  .preview-content.cb-numbered-on pre.cb-numbered {
+    counter-reset: cb-line;
+    padding-left: 0;
+  }
+  .preview-content.cb-numbered-on pre.cb-numbered code {
+    display: block;
+    white-space: normal;
+  }
+  .preview-content.cb-numbered-on pre.cb-numbered code .cb-line {
+    counter-increment: cb-line;
+    display: block;
+    padding-left: 3.4em;
+    position: relative;
+    white-space: pre;
+  }
+  .preview-content.cb-wrap-on.cb-numbered-on pre.cb-numbered code .cb-line {
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+  .preview-content.cb-numbered-on pre.cb-numbered code .cb-line::before {
+    content: counter(cb-line);
+    position: absolute;
+    left: 0;
+    width: 2.6em;
+    padding-right: 0.6em;
+    text-align: right;
+    color: var(--ink-muted, #59636e);
+    border-right: 1px solid var(--rule, #e4e6e9);
+    user-select: none;
+    -webkit-user-select: none;
+  }
+</style>${customCss ? `\n<style id="solomd-custom-theme">\n${customCss}\n</style>` : ''}
 </head>
-<body>
+<body class="${['preview-content', bodyClasses].filter(Boolean).join(' ')}">
 ${body}
 </body>
 </html>`;
@@ -185,9 +238,17 @@ export interface StandaloneHtmlInput {
   plantumlServer?: string | null;
   /** Byte reader for local images (tests/harness); defaults to the Tauri one. */
   readBytes?: BinaryReader;
+  /** #439 — optional custom CSS override; defaults to active `<style id="solomd-custom-theme">`. */
+  customCss?: string;
+  /** #454 — render line numbers inside fenced code blocks when enabled. */
+  codeBlockLineNumbers?: boolean;
+  /** #454 — soft-wrap long lines inside fenced code blocks when enabled. */
+  codeBlockWrap?: boolean;
 }
 
 export async function buildStandaloneHtml(input: StandaloneHtmlInput): Promise<string> {
+  // An export is rendered once: never with placeholder math / plain code.
+  await loadRenderDeps();
   const imageRoot = extractImageRoot(input.content);
   // Local images are embedded as `data:` URLs first: a standalone .html has
   // no way to reach the app's `asset.localhost` protocol, so rewriting the
@@ -214,5 +275,13 @@ export async function buildStandaloneHtml(input: StandaloneHtmlInput): Promise<s
   // #313 / #332 — KaTeX's stylesheet and fonts go into the file, and only
   // when there is math. This was a render-blocking jsDelivr <link>.
   const headCss = hasKatex(body) ? await standaloneKatexCss() : '';
-  return HTML_TEMPLATE(input.title, body, headCss);
+  const rawCustomCss = input.customCss !== undefined ? input.customCss : getActiveCustomCss();
+  const customCss = buildExportCustomCss(rawCustomCss, 'body.preview-content');
+  const bodyClasses = [
+    input.codeBlockLineNumbers ? 'cb-numbered-on' : '',
+    input.codeBlockWrap ? 'cb-wrap-on' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return HTML_TEMPLATE(input.title, body, headCss, customCss, bodyClasses);
 }

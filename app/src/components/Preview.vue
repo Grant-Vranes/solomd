@@ -1,22 +1,27 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
-import { initMermaid } from '../lib/mermaid-lazy';
+import { bindMermaidInteractions, initMermaid } from '../lib/mermaid-lazy';
 import { mermaidThemeFor } from '../lib/themes';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { openRenderedLink } from '../lib/link-open';
 import { renderMarkdown, extractImageRoot } from '../lib/markdown';
+import { togglePreviewTask } from '../lib/preview-task-toggle';
+import { useRenderDepsVersion } from '../composables/useRenderDepsVersion';
 import { plantumlSvgUrl } from '../lib/plantuml';
 import { installSvgImageFallbacks, rewriteImageUrls } from '../lib/image-resolve';
 import { openImageOverlay, type OverlayStrings } from '../lib/image-overlay';
 import { svgToPngBlob, diagramBackground } from '../lib/mermaid-export';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { documentDir, join } from '@tauri-apps/api/path';
 import { invoke } from '@tauri-apps/api/core';
+import { isIOS } from '../lib/platform';
 import { useToastsStore } from '../stores/toasts';
 import { useI18n } from '../i18n';
 import { useSettingsStore } from '../stores/settings';
 import { useTabsStore } from '../stores/tabs';
-import { useFiles } from '../composables/useFiles';
 import PreviewSearch from './PreviewSearch.vue';
 import { attachCodeCopyButtons as attachSharedCodeCopyButtons } from '../lib/code-copy';
+import { writePngToClipboard } from '../lib/image-clipboard';
+import { previewScrollMemory, tabTopLineMemory, tabViewportAnchorMemory } from '../lib/scroll-memory';
 
 const props = withDefaults(
   defineProps<{
@@ -44,17 +49,8 @@ const props = withDefaults(
 const emit = defineEmits<{ (e: 'topline', line: number): void }>();
 const settings = useSettingsStore();
 const tabs = useTabsStore();
-const files = useFiles();
 const { t } = useI18n();
 const host = ref<HTMLDivElement | null>(null);
-
-// Per-tab scroll memory (runtime-only). The preview is a single reused
-// component: switching tabs swaps `source`, re-renders the whole document
-// and drops the scroll to the top. Remember each tab's scrollTop here and
-// restore it after the re-render settles, so reading position survives
-// tab switches in preview / split mode.
-const previewScrollMemory = new Map<string, number>();
-const PREVIEW_SCROLL_MEMORY_LIMIT = 50;
 const searchOpen = ref(false);
 const searchRef = ref<InstanceType<typeof PreviewSearch> | null>(null);
 
@@ -140,6 +136,41 @@ function cancelMathEdit() {
   mathEdit.value = null;
 }
 
+// ── Clickable task checkboxes ──
+// renderMarkdown emits them `disabled` so exported HTML/PDF stay static; the
+// in-app preview of a real tab re-enables them and writes the toggle back to
+// the tab (the editor follows the store, as for the math edit above).
+function enableTaskCheckboxes() {
+  if (!host.value || !props.tabId) return;
+  for (const box of Array.from(host.value.querySelectorAll<HTMLInputElement>('input.task-list-item-checkbox'))) {
+    box.disabled = false;
+  }
+}
+
+function onTaskCheckboxClick(e: MouseEvent) {
+  const box = e.target as HTMLElement;
+  if (!(box instanceof HTMLInputElement) || !box.classList.contains('task-list-item-checkbox')) return;
+  if (!props.tabId || !host.value) {
+    e.preventDefault();
+    return;
+  }
+  // The click has already flipped `checked`; the state the user saw is the opposite.
+  const wasChecked = !box.checked;
+  const all = Array.from(host.value.querySelectorAll('input.task-list-item-checkbox'));
+  const li = box.closest('li.task-list-item');
+  const dataLine = Number(li?.getAttribute('data-line') || 0);
+  // The editor syncs into the store on a debounce; flush first so the toggle
+  // is applied to what is on screen, not to text a few keystrokes old.
+  window.dispatchEvent(new Event('solomd:flush-content-sync'));
+  const tab = tabs.tabs.find((x) => x.id === props.tabId);
+  const next = togglePreviewTask(tab?.content ?? props.source ?? '', dataLine, all.indexOf(box), wasChecked);
+  if (next === null) {
+    e.preventDefault();
+    return;
+  }
+  tabs.setContent(props.tabId, next);
+}
+
 function onMathKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') { e.preventDefault(); cancelMathEdit(); }
   else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveMathEdit(); }
@@ -147,6 +178,7 @@ function onMathKeydown(e: KeyboardEvent) {
 
 let mermaidIdSeq = 0;
 
+const renderDepsVersion = useRenderDepsVersion();
 
 const html = computed(() => {
   // #141 — establish a reactive dep on the hard-breaks toggle so flipping the
@@ -158,6 +190,8 @@ const html = computed(() => {
   void settings.markdownAutoNumberHeadings;
   // #216 — and for the smart-quotes toggle (md singleton rule state).
   void settings.smartQuotes;
+  // And for KaTeX / highlight.js arriving after the first render.
+  void renderDepsVersion.value;
   const source = props.source || '';
   return rewriteImageUrls(renderMarkdown(source), extractImageRoot(source), props.filePath);
 });
@@ -208,13 +242,14 @@ async function processMermaid() {
     const code = (block.textContent || '').trim();
     const id = `mmd-${++mermaidIdSeq}`;
     try {
-      const { svg } = await mermaid.render(id, code);
+      const { svg, bindFunctions } = await mermaid.render(id, code);
       const wrap = document.createElement('div');
       wrap.className = 'mermaid-block';
       // Keep the source so a theme switch can re-render this diagram.
       wrap.dataset.mermaidSource = code;
       wrap.innerHTML = svg;
       pre.replaceWith(wrap);
+      bindMermaidInteractions(wrap, bindFunctions);
     } catch (e) {
       const err = document.createElement('pre');
       err.className = 'mermaid-error';
@@ -412,6 +447,9 @@ function attachImageOverlayHandlers() {
     if ((block as HTMLElement).dataset.overlayBound === '1') continue;
     (block as HTMLElement).dataset.overlayBound = '1';
     block.addEventListener('click', ((e: MouseEvent) => {
+      // #462 — Let clicks on embedded links inside a Mermaid diagram pass
+      // through to `handleLinkClick` instead of opening the zoom overlay.
+      if ((e.target as Element | null)?.closest?.('a')) return;
       e.stopPropagation();
       e.preventDefault();
       const svg = block.querySelector('svg');
@@ -452,14 +490,19 @@ async function exportDiagramPng(svg: SVGElement) {
   const toasts = useToastsStore();
   try {
     const blob = await svgToPngBlob(svg, { scale: 2, background: diagramBackground() });
-    const path = await saveDialog({
-      defaultPath: diagramExportName(),
-      filters: [{ name: 'PNG Image', extensions: ['png'] }],
-    });
+    const filename = diagramExportName();
+    const path = isIOS()
+      ? await join(await documentDir(), filename)
+      : await saveDialog({
+          defaultPath: filename,
+          filters: [{ name: 'PNG Image', extensions: ['png'] }],
+        });
     if (!path) return;
     const buffer = new Uint8Array(await blob.arrayBuffer());
     await invoke('write_binary_file', { path, data: Array.from(buffer) });
-    toasts.success(`Saved ${path.split(/[\\/]/).pop()}`);
+    toasts.success(
+      isIOS() ? t('toast.savedToIos', { name: filename }) : `Saved ${path.split(/[\\/]/).pop()}`,
+    );
   } catch (err) {
     toasts.error(`Export failed: ${err}`);
   }
@@ -469,63 +512,89 @@ async function copyDiagramPng(svg: SVGElement) {
   const toasts = useToastsStore();
   try {
     const blob = await svgToPngBlob(svg, { scale: 2, background: diagramBackground() });
-    try {
-      const item = new ClipboardItem({ 'image/png': blob });
-      await navigator.clipboard.write([item]);
-    } catch {
-      // WKWebView denies navigator.clipboard outside a user gesture /
-      // focused document — same fallback as useExport.copyAsImage.
-      const { writeImage } = await import('@tauri-apps/plugin-clipboard-manager');
-      const { Image } = await import('@tauri-apps/api/image');
-      const img = await Image.fromBytes(new Uint8Array(await blob.arrayBuffer()));
-      await writeImage(img);
-    }
+    // Shared with the editor's "Copy image" (#362): Tauri plugin first, then
+    // the browser Clipboard API.
+    await writePngToClipboard(blob);
     toasts.success(t('overlay.copyImage') + ' ✓');
   } catch (err) {
     toasts.error(`Copy failed: ${err}`);
   }
 }
 
-// Restore the remembered scroll position for the incoming tab. Called after
-// the DOM has re-rendered. Async blocks (mermaid / images) grow the page
-// later, so re-assert briefly — but never fight a scroll the user makes.
-let pendingScrollRestore: number | null = null;
-let restoreCancelled = false;
-function maybeRestoreTabScroll() {
-  if (pendingScrollRestore == null || !host.value) return;
-  const st = pendingScrollRestore;
-  pendingScrollRestore = null;
-  restoreCancelled = false;
-  host.value.scrollTop = st;
-  const reassert = () => {
-    if (restoreCancelled || !host.value) return;
-    if (st > 50 && host.value.scrollTop < 10) host.value.scrollTop = st;
-  };
-  requestAnimationFrame(reassert);
-  setTimeout(reassert, 120);
-  setTimeout(reassert, 400);
+// #456 / #406 — Remember per-tab reading scroll offset in Preview / Reading
+// mode via shared `previewScrollMemory` & `tabTopLineMemory` so switching tabs
+// or view modes restores each document's reading position.
+let restoringTabScroll = false;
+let explicitLineJumped = false;
+
+function scrollToSourceLineQuiet(line: number, offsetTop?: number): boolean {
+  const article = host.value;
+  const container = article?.parentElement as HTMLElement | null;
+  if (!article || !container || line < 1) return false;
+  const nodes = Array.from(article.querySelectorAll<HTMLElement>('[data-source-line]'));
+  if (!nodes.length) return false;
+  let lo = 0;
+  let hi = nodes.length - 1;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const n = Number(nodes[mid].getAttribute('data-source-line') || 0);
+    if (n <= line) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const target = nodes[best];
+  const nodeLine = Number(target.getAttribute('data-source-line') || 1);
+  const targetRect = target.getBoundingClientRect();
+  let inBlockOffset = 0;
+  if (line > nodeLine) {
+    const nextNode = best + 1 < nodes.length ? nodes[best + 1] : null;
+    const nextLine = nextNode ? Number(nextNode.getAttribute('data-source-line') || 0) : 0;
+    if (nextNode && nextLine > nodeLine) {
+      const frac = Math.max(0, Math.min(1, (line - nodeLine) / (nextLine - nodeLine)));
+      const spanPx = Math.max(0, nextNode.getBoundingClientRect().top - targetRect.top);
+      inBlockOffset = frac * spanPx;
+    } else {
+      const totalLines = Math.max(line, (props.source || '').split('\n').length);
+      const frac = Math.max(0, Math.min(1, (line - nodeLine) / Math.max(1, totalLines - nodeLine + 1)));
+      inBlockOffset = frac * targetRect.height;
+    }
+  }
+  const desiredOffset = typeof offsetTop === 'number' ? Math.max(0, offsetTop) : TOP_GAP;
+  const delta = targetRect.top + inBlockOffset - container.getBoundingClientRect().top;
+  container.scrollTop = Math.max(0, container.scrollTop + delta - desiredOffset);
+  previewScrollMemory.set(props.tabId || '', container.scrollTop);
+  return true;
 }
 
-// Snapshot the outgoing tab's scroll position the moment the tab id changes
-// — at that point the DOM still holds the old document.
+function restoreTabScroll(tabId?: string) {
+  const container = host.value?.parentElement as HTMLElement | null;
+  if (!container) return;
+  restoringTabScroll = true;
+  const anchor = tabId ? tabViewportAnchorMemory.get(tabId) : undefined;
+  const savedLine = anchor?.line ?? (tabId ? tabTopLineMemory.get(tabId) : undefined);
+  const hasSavedPx = tabId ? previewScrollMemory.has(tabId) : false;
+  if (savedLine && savedLine >= 1 && (!hasSavedPx || props.skin === 'reading')) {
+    scrollToSourceLineQuiet(savedLine, anchor?.offsetTop);
+  } else {
+    const saved = tabId ? (previewScrollMemory.get(tabId) ?? 0) : 0;
+    container.scrollTop = saved;
+  }
+  requestAnimationFrame(() => {
+    restoringTabScroll = false;
+    onHostScroll();
+  });
+}
+
 watch(
   () => props.tabId,
-  (newId, oldId) => {
-    restoreCancelled = true;
-    if (oldId && host.value) {
-      if (previewScrollMemory.size >= PREVIEW_SCROLL_MEMORY_LIMIT && !previewScrollMemory.has(oldId)) {
-        const oldest = previewScrollMemory.keys().next().value;
-        if (oldest !== undefined) previewScrollMemory.delete(oldest);
-      }
-      previewScrollMemory.set(oldId, host.value.scrollTop);
-    }
-    pendingScrollRestore = newId ? previewScrollMemory.get(newId) ?? null : null;
-    if (pendingScrollRestore != null) {
-      // html may not change when two tabs share identical content; restore
-      // directly after the flush in that case. The html watcher path covers
-      // the normal re-render.
-      nextTick(() => maybeRestoreTabScroll());
-    }
+  async (newId, oldId) => {
+    if (newId === oldId) return;
+    await nextTick();
+    restoreTabScroll(newId);
   },
 );
 
@@ -534,14 +603,18 @@ watch(html, async () => {
   mathEdit.value = null;
   // Block offsets changed — the scroll-position cache is stale.
   invalidateToplineCache();
+  const activeTabId = props.tabId;
   await nextTick();
-  maybeRestoreTabScroll();
+  if (activeTabId && restoringTabScroll) {
+    restoreTabScroll(activeTabId);
+  }
   processPlantuml();
   await processMermaid();
   await processWhiteboards();
   await processExcalidrawFences();
   attachImageOverlayHandlers();
   attachCodeCopyButtons();
+  enableTaskCheckboxes();
 });
 
 // Toggling PlantUML (or changing the server) must re-render: the markdown
@@ -560,99 +633,43 @@ watch(
   await processExcalidrawFences();
     attachImageOverlayHandlers();
     attachCodeCopyButtons();
+    enableTaskCheckboxes();
   },
 );
 
 /**
  * Intercept all link clicks inside the preview pane and open them in the
  * system browser instead of navigating the Tauri webview (which would
- * replace the SoloMD UI with the target page).
+ * replace the SoloMD UI with the target page). Shared with the Windows
+ * live-edit blocks — see lib/link-open.
  */
 function handleLinkClick(e: MouseEvent) {
   const anchor = (e.target as HTMLElement).closest('a');
   if (!anchor) return;
-  // Wikilink (F1, v2.0): intercept and dispatch resolution to App.vue.
-  if (anchor.classList.contains('md-wikilink')) {
-    const target = anchor.getAttribute('data-wikilink-target') || '';
-    if (target) {
-      e.preventDefault();
-      e.stopPropagation();
-      window.dispatchEvent(new CustomEvent('solomd:wiki-open', { detail: { target } }));
-    }
-    return;
-  }
-  const href = anchor.getAttribute('href');
-  if (!href) return;
-  // Allow in-page anchor jumps (#heading)
-  if (href.startsWith('#')) return;
-  e.preventDefault();
-  e.stopPropagation();
-  // External URL: open in system browser
-  if (/^(https?|mailto|tel):/i.test(href)) {
-    openUrl(href).catch((err) => {
-      console.warn('[Preview] openUrl failed:', href, err);
-    });
-    return;
-  }
-  // Relative path: resolve against current file's directory. #163-followup —
-  // route through openLinkedFile so a link to a PDF / Office / etc. opens with
-  // the OS default app (when openLinkedFilesExternally is on) instead of being
-  // converted to Markdown; md / text / images still open in-app.
-  if (props.filePath) {
-    const resolved = resolveRelativePath(props.filePath, href);
-    files.openLinkedFile(resolved, { bypassNewWindow: true }).catch((err) => {
-      console.warn('[Preview] openLinkedFile failed:', resolved, err);
-    });
-  }
-}
-
-/**
- * #116 — resolve a relative markdown link against the current file's path.
- * Robust to (a) Windows back-slash separators, (b) percent-encoded hrefs
- * (CJK filenames / spaces are URL-encoded by the renderer), and (c) `../` /
- * `./` traversal. The result is emitted in the base path's separator style so
- * the Rust side opens it on every platform.
- */
-function resolveRelativePath(basePath: string, href: string): string {
-  // Strip any #fragment / ?query the anchor may carry, then decode.
-  let rel = href.replace(/[#?].*$/, '');
-  try {
-    rel = decodeURIComponent(rel);
-  } catch {
-    /* malformed encoding — fall back to the raw href */
-  }
-  const winStyle = basePath.includes('\\') && !basePath.includes('/');
-  const sepCh = winStyle ? '\\' : '/';
-  // #138 — a UNC path (`\\server\share\…`, or WSL's `\\wsl$\Ubuntu\…` /
-  // `\\wsl.localhost\…`) starts with a DOUBLE separator. Splitting on
-  // `[\\/]+` collapses that pair into one match, so a naive join emits a
-  // single leading `\` — an invalid path that Rust's `fs::read` rejects with
-  // os error 3. Detect it and restore the second leading separator.
-  const isUnc = /^[\\/]{2}/.test(basePath);
-  // Directory segments of the current file (drop the file name itself).
-  const segs = basePath.split(/[\\/]+/);
-  segs.pop();
-  for (const part of rel.split(/[\\/]+/)) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') {
-      if (segs.length > 1) segs.pop();
-      continue;
-    }
-    segs.push(part);
-  }
-  const joined = segs.join(sepCh);
-  return isUnc ? sepCh + joined : joined;
+  openRenderedLink(anchor, e, props.filePath);
 }
 
 onMounted(async () => {
   await nextTick();
+  if (props.tabId && (previewScrollMemory.has(props.tabId) || tabTopLineMemory.has(props.tabId))) {
+    restoreTabScroll(props.tabId);
+  }
   processPlantuml();
   await processMermaid();
   await processWhiteboards();
   await processExcalidrawFences();
   attachImageOverlayHandlers();
   attachCodeCopyButtons();
+  enableTaskCheckboxes();
+  if (
+    props.tabId &&
+    !explicitLineJumped &&
+    (previewScrollMemory.has(props.tabId) || tabTopLineMemory.has(props.tabId))
+  ) {
+    restoreTabScroll(props.tabId);
+  }
   host.value?.addEventListener('click', handleLinkClick);
+  host.value?.addEventListener('click', onTaskCheckboxClick);
   host.value?.addEventListener('dblclick', onPreviewDblClick);
   // Layout changes that don't go through `html` still shift block offsets:
   // window resizes, pane resizes, and images finishing load (they have
@@ -663,12 +680,17 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   host.value?.removeEventListener('click', handleLinkClick);
+  host.value?.removeEventListener('click', onTaskCheckboxClick);
   host.value?.removeEventListener('dblclick', onPreviewDblClick);
   window.removeEventListener('resize', invalidateToplineCache);
   host.value?.removeEventListener('load', invalidateToplineCache, true);
 });
 
 function openSearch() {
+  if (searchOpen.value) {
+    searchOpen.value = false;
+    return;
+  }
   searchOpen.value = true;
   nextTick(() => searchRef.value?.focusInput());
 }
@@ -680,6 +702,7 @@ function openSearch() {
  * so its gotoLine is unavailable).
  */
 function scrollToLine(line: number) {
+  explicitLineJumped = true;
   const article = host.value;
   if (!article) return;
   const container = article.parentElement as HTMLElement | null;
@@ -772,6 +795,12 @@ function buildToplineCache(): ToplineEntry[] {
 }
 
 function onHostScroll() {
+  if (props.tabId && !restoringTabScroll) {
+    const container = host.value?.parentElement as HTMLElement | null;
+    if (container) {
+      previewScrollMemory.set(props.tabId, container.scrollTop);
+    }
+  }
   if (toplineRaf) return;
   toplineRaf = requestAnimationFrame(() => {
     toplineRaf = 0;
@@ -796,10 +825,13 @@ function onHostScroll() {
       }
     }
     if (best === -1) return;
-    const line = cache[best].line || 1;
-    if (line !== lastEmittedTopline) {
-      lastEmittedTopline = line;
-      emit('topline', line);
+    const topLine = cache[best].line || 1;
+    if (props.tabId && !restoringTabScroll) {
+      tabTopLineMemory.set(props.tabId, topLine);
+    }
+    if (topLine !== lastEmittedTopline) {
+      lastEmittedTopline = topLine;
+      emit('topline', topLine);
     }
   });
 }
@@ -859,7 +891,7 @@ defineExpose({ scrollToLine, openSearch });
         'cb-numbered-on': settings.codeBlockLineNumbers,
         'cb-wrap-on': settings.codeBlockWrap,
       }"
-      :style="{ '--preview-max-width': `${settings.previewMaxWidth || 760}px` }"
+      :style="{ '--preview-max-width': `${settings.previewMaxWidth || 680}px` }"
       v-html="html"
     ></article>
 
@@ -916,9 +948,11 @@ defineExpose({ scrollToLine, openSearch });
 :where(.preview-content) {
   /* v4.10 #165 — column width is user-tunable (previewMaxWidth setting sets
      the var on the article); 760px was the old hardcoded value. */
-  max-width: var(--preview-max-width, 760px);
+  max-width: var(--preview-max-width, 680px);
   margin: 0 auto;
-  padding: 28px 36px 64px;
+  /* 5.0 §5 — same column and top margin as the editor (content-box: the max
+     width is the text measure). */
+  padding: 20px 32px 30vh;
   color: var(--text);
   /* #133 — honor the editor `fontFamily` setting (set as `--content-font-family`
      in App.vue) so the rendered pane matches the editor in split view. Falls
@@ -926,8 +960,8 @@ defineExpose({ scrollToLine, openSearch });
   font-family: var(--content-font-family, var(--font-ui));
   /* v4.3.0 PR #74 — preview-only font size; driven by settings.previewFontSize
      via the `--content-font-size` CSS custom property set in App.vue. */
-  font-size: var(--content-font-size, 15px);
-  line-height: 1.7;
+  font-size: var(--content-font-size, 16px);
+  line-height: 1.8;
   /* #293 — prose must never push past the column. Text pasted out of Word, a
      web page or a chat transcript often joins its words with NO-BREAK SPACE
      (U+00A0) instead of U+0020; the reporter's file had 119 of them against 23
@@ -941,45 +975,60 @@ defineExpose({ scrollToLine, openSearch });
 }
 .preview-content--fit {
   max-width: none;
-  padding: 28px 16px 64px;
+  padding: 20px 32px 30vh;
 }
+/* 5.0 §2 type scale — H1 30/650/1.25 −0.015em, H2 20/620, H3 17/600 at the
+   16px default; in em so the font-size setting scales them. Same values as
+   the live editor (lib/cm-live-render.ts) and the Windows block editor. */
 :where(.preview-content) h1,
 :where(.preview-content) h2,
 :where(.preview-content) h3,
-:where(.preview-content) h4 {
-  font-weight: 700;
-  line-height: 1.25;
+:where(.preview-content) h4,
+:where(.preview-content) h5,
+:where(.preview-content) h6 {
+  font-weight: 600;
+  line-height: 1.3;
   margin: 1.6em 0 0.5em;
 }
 :where(.preview-content) h1 {
-  font-size: 2em;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 0.3em;
+  font-size: 1.875em;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  margin: 1.2em 0 0.6em;
 }
 :where(.preview-content) h2 {
-  font-size: 1.5em;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 0.25em;
+  font-size: 1.25em;
+  font-weight: 620;
 }
-:where(.preview-content) h3 { font-size: 1.2em; }
-:where(.preview-content) p { margin: 0.8em 0; }
+:where(.preview-content) h3 { font-size: 1.125em; }
+:where(.preview-content) h4 { font-size: 1.0625em; }
+:where(.preview-content) h5,
+:where(.preview-content) h6 { font-size: 1em; }
+:where(.preview-content) > :first-child { margin-top: 0; }
+:where(.preview-content) p { margin: 0.9em 0; }
 :where(.preview-content) a {
-  color: var(--accent);
-  text-decoration: none;
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-text) 35%, transparent);
+  text-underline-offset: 3px;
 }
-:where(.preview-content) a:hover { text-decoration: underline; }
+:where(.preview-content) a:hover { text-decoration-color: currentColor; }
 :where(.preview-content) code {
   font-family: var(--font-mono);
-  font-size: 0.9em;
-  background: var(--bg-hover);
-  padding: 0.15em 0.4em;
-  border-radius: 4px;
+  font-size: 0.875em;
+  color: var(--text);
+  background: var(--fill-1);
+  padding: 0.12em 0.35em;
+  border-radius: var(--r-xs);
 }
 :where(.preview-content) pre {
   font-family: var(--font-mono);
-  background: var(--bg-hover);
+  font-size: 0.8125em;
+  line-height: 1.6;
+  background: var(--bg-elev);
   padding: 14px 16px;
-  border-radius: 6px;
+  border-radius: var(--r-lg);
   overflow-x: auto;
 }
 /* #195 / v4.11.18 — the copy-button chrome now lives in styles/main.css so
@@ -987,6 +1036,7 @@ defineExpose({ scrollToLine, openSearch });
  * live-edit mode all render the identical affordance. */
 :where(.preview-content) pre code {
   font-family: var(--font-mono);
+  font-size: inherit;
   background: transparent;
   padding: 0;
 }
@@ -1046,14 +1096,24 @@ defineExpose({ scrollToLine, openSearch });
   -webkit-user-select: none;
 }
 :where(.preview-content) blockquote {
-  border-left: 3px solid var(--accent);
   margin: 1em 0;
-  padding: 0.2em 1em;
-  color: var(--text-muted);
+  padding: 12px 16px;
+  background: var(--bg-elev);
+  border-radius: var(--r-lg);
+  color: var(--text-2);
 }
+:where(.preview-content) blockquote > :first-child { margin-top: 0; }
+:where(.preview-content) blockquote > :last-child { margin-bottom: 0; }
 :where(.preview-content) ul,
 :where(.preview-content) ol {
-  padding-left: 1.6em;
+  padding-left: 1.8em;
+}
+:where(.preview-content) ol > li {
+  padding-left: 0.2em;
+}
+:where(.preview-content) li::marker {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
 }
 :where(.preview-content) table {
   border-collapse: collapse;
@@ -1062,6 +1122,22 @@ defineExpose({ scrollToLine, openSearch });
 :where(.preview-content--fit) table {
   width: 100%;
 }
+/* #367 — a table wider than the column scrolls on its own instead of
+   pushing the whole preview sideways (where the headings and prose scroll
+   away with it). `display: block` + `max-content` is the GitHub recipe: a
+   narrow table still sizes to its content, a wide one is capped at the column
+   and gets its own horizontal scrollbar. On screen only and only in the
+   preview pane — print/PDF overlays reuse `.preview-content` and must not
+   clip. Fit-width mode keeps its full-width tables (the block box would stop
+   them stretching); there the pane itself still scrolls. */
+@media screen {
+  .preview-host .preview-content:not(.preview-content--fit) table {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
 :where(.preview-content) th,
 :where(.preview-content) td {
   border: 1px solid var(--border);
@@ -1069,7 +1145,7 @@ defineExpose({ scrollToLine, openSearch });
 }
 :where(.preview-content) hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--hairline);
   margin: 2em 0;
 }
 :where(.preview-content) img {
@@ -1146,13 +1222,17 @@ defineExpose({ scrollToLine, openSearch });
   font-style: italic;
 }
 :where(.preview-content) .katex-display {
+  /* KaTeX draws tall delimiters, limits and \dfrac a few px past the formula
+     box; overflow-x:auto forces overflow-y to clip, which cut their bottoms
+     off. Padding gives them room inside the box (margin reduced to match). */
   overflow-x: auto;
   overflow-y: hidden;
-  margin: 1em 0;
+  padding: 0.5em 0;
+  margin: 0.5em 0;
 }
 /* Wikilinks (F1, v2.0) */
 .preview-content .md-wikilink {
-  color: var(--accent, #ff9f40);
+  color: var(--accent-text);
   background: color-mix(in srgb, var(--accent, #ff9f40) 10%, transparent);
   padding: 1px 5px;
   border-radius: 4px;
@@ -1160,12 +1240,6 @@ defineExpose({ scrollToLine, openSearch });
   font-weight: 500;
   cursor: pointer;
   transition: background 0.12s;
-}
-.preview-content .md-wikilink::before {
-  content: '🔗';
-  font-size: 0.75em;
-  margin-right: 3px;
-  opacity: 0.6;
 }
 .preview-content .md-wikilink:hover {
   background: color-mix(in srgb, var(--accent, #ff9f40) 22%, transparent);
@@ -1220,14 +1294,14 @@ defineExpose({ scrollToLine, openSearch });
   );
   /* v4.10 #165 — reading column follows the same width setting as the
      preview pane (720px was the old hardcoded serif column). */
-  max-width: var(--preview-max-width, 720px);
+  max-width: var(--preview-max-width, 680px);
   margin: 0 auto;
-  padding: 64px 32px 96px;
-  font-family: var(--font-reading);
-  /* #143 — scale with the user's preview font size instead of a fixed 18px
-     (the setting looked dead in reading mode). 1.2× keeps reading mode's
-     slightly-larger-than-preview feel at the 15px default (= the old 18px). */
-  font-size: calc(var(--content-font-size, 15px) * 1.2);
+  padding: 88px 32px 30vh;
+  /* 5.0 §5 — reading view sets the text exactly as the editor and preview
+     do (face, size, scale, blocks); only the page margin is roomier. A face
+     the user picked still wins via --content-font-family. */
+  font-family: var(--content-font-family, var(--font-ui));
+  font-size: var(--content-font-size, 16px);
   line-height: 1.8;
   color: var(--text);
 }
@@ -1237,38 +1311,10 @@ defineExpose({ scrollToLine, openSearch });
 .preview-content--reading.preview-content--fit {
   max-width: none;
 }
-:where(.preview-content--reading) h1,
-:where(.preview-content--reading) h2,
-:where(.preview-content--reading) h3,
-:where(.preview-content--reading) h4 {
-  font-family: var(--font-reading);
-  letter-spacing: -0.005em;
-}
-:where(.preview-content--reading) h1 {
-  font-size: 2.2em;
-  margin-top: 0;
-  border-bottom: 0;
-  padding-bottom: 0;
-}
-:where(.preview-content--reading) h2 {
-  font-size: 1.55em;
-  border-bottom: 0;
-  padding-bottom: 0;
-  margin: 2em 0 0.5em;
-}
-:where(.preview-content--reading) p {
-  margin: 1em 0;
-}
-:where(.preview-content--reading) blockquote {
-  border-left: 3px solid var(--border);
-  color: var(--text-muted);
-  font-style: italic;
-}
 /* Tighten max-width on phones; on iPad keep the comfy reading column. */
 @media (max-width: 540px) {
   .preview-content--reading {
     padding: 32px 18px 64px;
-    font-size: 17px;
   }
 }
 

@@ -1,3 +1,4 @@
+import { samePath } from '../lib/path-key';
 import { defineStore } from 'pinia';
 import type { Language, Tab } from '../types';
 import { useSettingsStore } from './settings';
@@ -107,6 +108,7 @@ function bucketKey(folder: string | null): string {
 }
 
 function isDirty(t: Tab): boolean {
+  if (t.ephemeral && !t.filePath) return false;
   return t.content !== t.savedContent;
 }
 
@@ -128,7 +130,17 @@ function readBucket(key: string): PersistedState | null {
     const raw = localStorage.getItem(key);
     if (raw) {
       const data = JSON.parse(raw) as PersistedState;
-      if (Array.isArray(data.tabs)) return { tabs: data.tabs, activeId: data.activeId || '' };
+      if (Array.isArray(data.tabs)) {
+        for (const t of data.tabs) {
+          if (typeof t.content === 'string' && t.content.includes('\r\n')) {
+            t.content = t.content.replace(/\r\n/g, '\n');
+          }
+          if (typeof t.savedContent === 'string' && t.savedContent.includes('\r\n')) {
+            t.savedContent = t.savedContent.replace(/\r\n/g, '\n');
+          }
+        }
+        return { tabs: data.tabs, activeId: data.activeId || '' };
+      }
     }
   } catch {}
   return null;
@@ -163,8 +175,61 @@ function loadPersisted(): PersistedState {
   return { tabs: [], activeId: '' };
 }
 
+/**
+ * B4 — "reopen closed tab" (Typora ⌘⇧T). What a closed tab needs to come
+ * back: its path (re-read from disk, so it is never stale), or — for a note
+ * that was never saved and was discarded on close — its text. Kept in memory
+ * only, per window, like a browser's; capped so it cannot grow without bound.
+ */
+export interface ClosedTabRecord {
+  filePath?: string;
+  fileName: string;
+  content: string;
+  language: Language;
+}
+const CLOSED_TAB_LIMIT = 20;
+const closedTabs: ClosedTabRecord[] = [];
+
+/**
+ * #508 — Most-Recently-Used (MRU) tab order for `Ctrl+Tab` / `Ctrl+Shift+Tab`.
+ * `mruTabIds[0]` is the currently active tab; `mruTabIds[1]` is the previously
+ * active tab so a single `Ctrl+Tab` toggles between the two most recent tabs,
+ * while holding `Ctrl` and pressing `Tab` repeatedly walks `mruCycleSnapshot`.
+ */
+const mruTabIds: string[] = [];
+let mruCycleSnapshot: string[] | null = null;
+let mruCycleIndex = 0;
+
+function recordMruVisit(id: string) {
+  if (!id) return;
+  const idx = mruTabIds.indexOf(id);
+  if (idx !== -1) mruTabIds.splice(idx, 1);
+  mruTabIds.unshift(id);
+}
+
+/**
+ * A12 — caret positions to put back once, for tabs that came back from a
+ * persisted session (launch, or returning to a workspace). Snapshotted at
+ * load time so the editor's own first cursor report (line 1 on mount) cannot
+ * overwrite the remembered position before the pane gets to apply it.
+ * Non-reactive on purpose: it is consumed, never rendered.
+ */
+const launchCursors = new Map<string, { line: number; col: number }>();
+function rememberLaunchCursors(list: Tab[]) {
+  for (const t of list) {
+    const c = t.cursor;
+    if (c && Number.isFinite(c.line) && c.line >= 1) launchCursors.set(t.id, { line: c.line, col: c.col || 1 });
+  }
+}
+let cursorPersistTimer: ReturnType<typeof setTimeout> | null = null;
+
 export const useTabsStore = defineStore('tabs', {
-  state: (): PersistedState => loadPersisted(),
+  state: (): PersistedState => {
+    const s = loadPersisted();
+    rememberLaunchCursors(s.tabs);
+    if (s.activeId) recordMruVisit(s.activeId);
+    return s;
+  },
   getters: {
     activeTab(state): Tab | undefined {
       return state.tabs.find((t) => t.id === state.activeId);
@@ -172,7 +237,9 @@ export const useTabsStore = defineStore('tabs', {
     isDirty(): (id: string) => boolean {
       return (id: string) => {
         const t = this.tabs.find((x) => x.id === id);
-        return !!t && t.content !== t.savedContent;
+        if (!t) return false;
+        if (t.ephemeral && !t.filePath) return false;
+        return t.content !== t.savedContent;
       };
     },
   },
@@ -193,6 +260,10 @@ export const useTabsStore = defineStore('tabs', {
       };
       this.tabs.push(tab);
       this.activeId = tab.id;
+      recordMruVisit(tab.id);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('solomd:leave-center-overlay'));
+      }
       return tab;
     },
     openFromDisk(payload: {
@@ -202,9 +273,13 @@ export const useTabsStore = defineStore('tabs', {
       language: Language;
       hadBom: boolean;
     }) {
-      const existing = this.tabs.find((t) => t.filePath === payload.filePath);
+      // One file, one tab — however the path is spelled (lib/path-key.ts):
+      // `c:\notes\a.md` and `C:\Notes\a.md` are the same document on Windows,
+      // and two buffers of it would lose whichever is saved first.
+      const existing = this.tabs.find((t) => samePath(t.filePath, payload.filePath));
       if (existing) {
         this.activeId = existing.id;
+        recordMruVisit(existing.id);
         // #317 — and adopt what the caller just read off disk. Opening a file
         // that is already open used to only focus the tab and throw the fresh
         // read away, so a document another editor had changed kept showing the
@@ -214,6 +289,9 @@ export const useTabsStore = defineStore('tabs', {
         // dialog owns that case.
         if (existing.content === existing.savedContent) {
           this.applyDiskRead(existing.id, payload);
+        }
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('solomd:leave-center-overlay'));
         }
         return existing;
       }
@@ -244,6 +322,10 @@ export const useTabsStore = defineStore('tabs', {
       };
       this.tabs.push(tab);
       this.activeId = tab.id;
+      recordMruVisit(tab.id);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('solomd:leave-center-overlay'));
+      }
       return tab;
     },
     /** #317 — apply a fresh read of the file to an open tab. The tab ends up
@@ -271,6 +353,28 @@ export const useTabsStore = defineStore('tabs', {
     setContent(id: string, content: string) {
       const t = this.tabs.find((x) => x.id === id);
       if (t) t.content = content;
+    },
+    /** A12 — record the caret (1-based line/col) the editor reports. The
+     *  auto-persist watcher in App.vue keys on content, not on the caret,
+     *  so persist here on a short debounce (one localStorage write per
+     *  pause, not per arrow key). */
+    setCursor(id: string, line: number, col: number) {
+      const t = this.tabs.find((x) => x.id === id);
+      if (!t || line < 1) return;
+      if (t.cursor && t.cursor.line === line && t.cursor.col === col) return;
+      t.cursor = { line, col };
+      if (cursorPersistTimer) clearTimeout(cursorPersistTimer);
+      cursorPersistTimer = setTimeout(() => {
+        cursorPersistTimer = null;
+        this.persist();
+      }, 800);
+    },
+    /** A12 — the caret position remembered for this tab from the previous
+     *  session, returned once (then forgotten). */
+    takeLaunchCursor(id: string): { line: number; col: number } | null {
+      const c = launchCursors.get(id) ?? null;
+      launchCursors.delete(id);
+      return c;
     },
     /** v4.6 F1 — apply content that was just written to disk by an external
      *  path (the Properties inspector's Rust frontmatter round-trip). Sets both
@@ -336,9 +440,24 @@ export const useTabsStore = defineStore('tabs', {
       const idx = this.tabs.findIndex((t) => t.id === id);
       if (idx === -1) return;
       const closed = this.tabs[idx];
+      // A blank untitled tab has nothing worth bringing back.
+      if (closed && (closed.filePath || closed.content.trim())) {
+        closedTabs.push({
+          filePath: closed.filePath,
+          fileName: closed.fileName,
+          content: closed.content,
+          language: closed.language,
+        });
+        if (closedTabs.length > CLOSED_TAB_LIMIT) closedTabs.shift();
+      }
       this.tabs.splice(idx, 1);
+      const mruIdx = mruTabIds.indexOf(id);
+      if (mruIdx !== -1) mruTabIds.splice(mruIdx, 1);
+      mruCycleSnapshot = null;
+      mruCycleIndex = 0;
       if (this.activeId === id) {
         this.activeId = this.tabs[idx]?.id ?? this.tabs[idx - 1]?.id ?? '';
+        if (this.activeId) recordMruVisit(this.activeId);
       }
       // Clean up any pane references to the closed tab
       try {
@@ -356,6 +475,85 @@ export const useTabsStore = defineStore('tabs', {
     },
     activate(id: string) {
       this.activeId = id;
+      recordMruVisit(id);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('solomd:leave-center-overlay'));
+      }
+    },
+    /** #508 — Record a tab visit in the MRU stack without resetting an active
+     *  Ctrl+Tab cycle snapshot (when called by `tiles.syncActiveTab`). */
+    recordVisit(id: string) {
+      if (mruCycleSnapshot && mruCycleSnapshot.length >= 2) {
+        const rest = mruCycleSnapshot.filter((x) => x !== id);
+        mruTabIds.splice(0, mruTabIds.length, id, ...rest);
+      } else {
+        recordMruVisit(id);
+      }
+    },
+    /** #508 — Finish an active Ctrl+Tab hold cycle when Ctrl/Meta is released. */
+    endMruCycle() {
+      mruCycleSnapshot = null;
+      mruCycleIndex = 0;
+    },
+    /** #508 — Compute the next tab ID in MRU order (`offset = 1` for `Ctrl+Tab`,
+     *  `offset = -1` for `Ctrl+Shift+Tab`). When `keepCycleOpen` is true (modifier
+     *  held down), repeated presses step through the snapshot captured at the
+     *  start of the hold; releasing the modifier (`endMruCycle()`) commits the
+     *  landed tab to the front of the MRU list so the next single `Ctrl+Tab`
+     *  toggles back to the previously active tab. */
+    nextMruTabId(offset: 1 | -1 = 1, keepCycleOpen = false): string | null {
+      const openIds = new Set(this.tabs.map((t) => t.id));
+      if (openIds.size < 2) return null;
+
+      if (mruCycleSnapshot && keepCycleOpen) {
+        const snap = mruCycleSnapshot.filter((id) => openIds.has(id));
+        if (snap.length >= 2) {
+          mruCycleSnapshot = snap;
+          mruCycleIndex = (mruCycleIndex + offset + snap.length) % snap.length;
+          const targetId = snap[mruCycleIndex];
+          mruTabIds.splice(
+            0,
+            mruTabIds.length,
+            targetId,
+            ...snap.filter((id) => id !== targetId),
+          );
+          return targetId;
+        }
+      }
+
+      if (this.activeId && openIds.has(this.activeId)) {
+        recordMruVisit(this.activeId);
+      }
+      const validMru = mruTabIds.filter((id) => openIds.has(id));
+      for (const t of this.tabs) {
+        if (!validMru.includes(t.id)) validMru.push(t.id);
+      }
+      mruTabIds.splice(0, mruTabIds.length, ...validMru);
+      if (validMru.length < 2) return null;
+
+      const idx = (0 + offset + validMru.length) % validMru.length;
+      const targetId = validMru[idx];
+      if (keepCycleOpen) {
+        mruCycleSnapshot = [...validMru];
+        mruCycleIndex = idx;
+      } else {
+        mruCycleSnapshot = null;
+        mruCycleIndex = 0;
+      }
+      mruTabIds.splice(
+        0,
+        mruTabIds.length,
+        targetId,
+        ...validMru.filter((id) => id !== targetId),
+      );
+      return targetId;
+    },
+    /** The most recently closed tab, removed from the reopen stack. */
+    popClosedTab(): ClosedTabRecord | undefined {
+      return closedTabs.pop();
+    },
+    hasClosedTabs(): boolean {
+      return closedTabs.length > 0;
     },
     /** #86 — move tab `tabId` to `intendedIndex` (the position in the list
      *  where the user wants it dropped). Handles the shift caused by removing
@@ -374,6 +572,25 @@ export const useTabsStore = defineStore('tabs', {
       const target = Math.max(0, Math.min(adjusted, this.tabs.length));
       if (target === fromIdx) { this.tabs.splice(fromIdx, 0, moved); return; }
       this.tabs.splice(target, 0, moved);
+    },
+    togglePin(tabId: string) {
+      const idx = this.tabs.findIndex((t) => t.id === tabId);
+      if (idx < 0) return;
+      const tab = this.tabs[idx];
+      tab.pinned = !tab.pinned;
+      const [moved] = this.tabs.splice(idx, 1);
+      if (tab.pinned) {
+        let lastPinned = -1;
+        for (let i = 0; i < this.tabs.length; i++) {
+          if (this.tabs[i].pinned) lastPinned = i;
+        }
+        this.tabs.splice(lastPinned + 1, 0, moved);
+      } else {
+        let firstUnpinned = this.tabs.findIndex((t) => !t.pinned);
+        if (firstUnpinned < 0) firstUnpinned = this.tabs.length;
+        this.tabs.splice(firstUnpinned, 0, moved);
+      }
+      this.persist();
     },
     toggleOutline(id: string) {
       const t = this.tabs.find((x) => x.id === id);
@@ -464,6 +681,7 @@ export const useTabsStore = defineStore('tabs', {
       // Carried tabs win (they hold the live, possibly-unsaved content).
       carried.forEach(push);
       restored.tabs.forEach(push);
+      rememberLaunchCursors(restored.tabs.filter((t) => !carried.some((c) => c.id === t.id)));
       const removed = this.tabs.filter((t) => !merged.some((m) => m.id === t.id));
       this.tabs = merged;
       // Pick an active tab: prefer the restored bucket's active, else keep

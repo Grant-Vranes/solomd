@@ -2,10 +2,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useTabsStore } from '../stores/tabs';
+import { useSettingsStore } from '../stores/settings';
 import { useFiles } from '../composables/useFiles';
 import { useI18n } from '../i18n';
+import { revealLabelKey } from '../lib/platform';
+import { displayTabTitle, displayTabTooltip } from '../lib/tab-title';
 
 const tabs = useTabsStore();
+const settings = useSettingsStore();
 const files = useFiles();
 const { t } = useI18n();
 
@@ -130,25 +134,25 @@ function onTabsWheel(e: WheelEvent) {
         @click="tabs.activate(tab.id)"
         @mousedown.middle.prevent="files.closeTabSafe(tab.id)"
         @contextmenu="openMenu($event, tab.id)"
-        :title="tab.filePath || tab.fileName"
+        :title="displayTabTooltip(tab, settings.tabTitleFromFirstLine)"
       >
-        <span class="tab__name">{{ tab.fileName }}</span>
+        <span class="tab__name">{{ displayTabTitle(tab, settings.tabTitleFromFirstLine) }}</span>
         <button
           v-if="tab.language === 'markdown'"
           class="tab__outline"
           :class="{ 'tab__outline--active': tab.showOutline }"
-          :title="tab.showOutline ? 'Hide outline' : 'Show outline'"
+          :title="t(tab.showOutline ? 'tabMenu.hideOutline' : 'tabMenu.showOutline')"
           @click.stop="tabs.toggleOutline(tab.id)"
         >≡</button>
         <span class="tab__dot" v-if="isDirty(tab.id)">●</span>
         <button
           class="tab__close"
           @click.stop="files.closeTabSafe(tab.id)"
-          aria-label="Close tab"
+          :aria-label="t('tabMenu.close')"
         >×</button>
       </div>
     </div>
-    <button class="tabbar__new" @click="files.newFile" title="New tab (Ctrl+N)">+</button>
+    <button class="tabbar__new" @click="files.newFile" :title="t('tabMenu.newTab')">+</button>
 
     <!-- Context menu portal -->
     <ul
@@ -166,7 +170,7 @@ function onTabsWheel(e: WheelEvent) {
       <li><button :disabled="!menuFlags?.hasSaved" @mousedown.prevent="onMenu('closeSaved')">{{ t('tabMenu.closeSaved') }}</button></li>
       <li><button :disabled="!menuFlags?.hasAll"   @mousedown.prevent="onMenu('closeAll')">{{ t('tabMenu.closeAll') }}</button></li>
       <li class="tab-menu__sep"></li>
-      <li><button :disabled="!menuFlags?.hasFilePath" @mousedown.prevent="onMenu('revealInFolder')">{{ t('tabMenu.revealInFolder') }}</button></li>
+      <li><button :disabled="!menuFlags?.hasFilePath" @mousedown.prevent="onMenu('revealInFolder')">{{ t(revealLabelKey('tabMenu.revealInFolder')) }}</button></li>
     </ul>
   </div>
 </template>

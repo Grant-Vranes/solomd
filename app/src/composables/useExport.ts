@@ -1,10 +1,11 @@
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { renderPlantumlForExport } from '../lib/plantuml';
 import { EditorView } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
 import { writeText, writeHtml, writeImage } from '@tauri-apps/plugin-clipboard-manager';
 import { Image } from '@tauri-apps/api/image';
 import { documentDir, join } from '@tauri-apps/api/path';
-import { isIOS, isWindowsDesktop } from '../lib/platform';
+import { isIOS, isMacOS, isMobile, isWindowsDesktop } from '../lib/platform';
 // Loaded per export rather than at startup. Between them these three pull in
 // `docx`, jsPDF + html2canvas and the mermaid renderer — megabytes that a user
 // who only opens a note to read it should never have to compile.
@@ -15,9 +16,11 @@ const markdownToPdfBlob: typeof import('../lib/pdf-export')['markdownToPdfBlob']
 const markdownToImageBlob: typeof import('../lib/image-export')['markdownToImageBlob'] =
   async (...args) => (await import('../lib/image-export')).markdownToImageBlob(...args);
 import { renderMarkdown, extractImageRoot } from '../lib/markdown';
+import { loadRenderDeps } from '../lib/render-deps';
 // Tiny shim: the mermaid bundle itself stays behind a dynamic import inside
 // it, so touching this module costs nothing at startup.
 import { initMermaid } from '../lib/mermaid-lazy';
+import { waitForPrintFonts } from '../lib/print-fonts';
 // Lazy like the three above: it carries KaTeX's stylesheet as a string and
 // is only needed when a note is actually exported to HTML.
 const buildStandaloneHtml: typeof import('../lib/html-export')['buildStandaloneHtml'] =
@@ -31,7 +34,7 @@ import {
   printableBox,
   withPrintPagination,
 } from '../lib/print-pages';
-import { rewriteLinkUrls, rewriteImageUrls } from '../lib/image-resolve';
+import { inlineLocalImages, rewriteLinkUrls, rewriteImageUrls } from '../lib/image-resolve';
 import { useTabsStore } from '../stores/tabs';
 import { useSettingsStore } from '../stores/settings';
 import { useToastsStore } from '../stores/toasts';
@@ -44,32 +47,11 @@ import {
   withPdfToc,
 } from '../lib/pdf-options';
 
-/** Strip Markdown syntax to produce plain prose. */
+import { stripMarkdownFormatting } from '../lib/clean-ai';
+
+/** Strip Markdown syntax (and unescape `\#`, `\*`, etc.) to produce plain prose. */
 function stripMarkdown(src: string): string {
-  return src
-    // Remove fenced code blocks (keep contents)
-    .replace(/```[a-zA-Z0-9]*\n([\s\S]*?)```/g, '$1')
-    // Inline code: `x` -> x
-    .replace(/`([^`]+)`/g, '$1')
-    // Images: ![alt](url) -> alt
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
-    // Links: [text](url) -> text
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    // Bold/italic: **x** _x_ *x* __x__ -> x
-    .replace(/(\*\*|__)(.+?)\1/g, '$2')
-    .replace(/(\*|_)(.+?)\1/g, '$2')
-    // Strikethrough
-    .replace(/~~(.+?)~~/g, '$1')
-    // Headings: # x -> x
-    .replace(/^#{1,6}\s+/gm, '')
-    // Blockquotes: > x -> x
-    .replace(/^>\s?/gm, '')
-    // List markers
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*\d+\.\s+/gm, '')
-    // Horizontal rules
-    .replace(/^[-*_]{3,}\s*$/gm, '')
-    .trim();
+  return stripMarkdownFormatting(src).trim();
 }
 
 /**
@@ -217,7 +199,7 @@ export function useExport() {
   function activeOr(): { content: string; baseName: string; filePath?: string } | null {
     const tab = tabs.activeTab;
     if (!tab) {
-      toasts.error('No active document');
+      toasts.error(t('toast.noActiveDoc'));
       return null;
     }
     // Tolerate stale persisted state from older versions where the
@@ -254,6 +236,11 @@ export function useExport() {
   // app's own Documents directory — UIFileSharingEnabled + LSSupports
   // OpeningDocumentsInPlace surface that folder under "On My iPhone › SoloMD"
   // in the Files app, so users can move/iCloud-sync from there.
+  /** The PlantUML server when the user turned PlantUML on (#163), else null. */
+  function plantumlServer(): string | null {
+    return settings.plantumlEnabled && settings.plantumlServer ? settings.plantumlServer : null;
+  }
+
   async function pickWritePath(
     filename: string,
     filters: { name: string; extensions: string[] }[],
@@ -265,12 +252,18 @@ export function useExport() {
     // #260 — start in the document's own folder instead of wherever the
     // last save happened. Falls back to a bare filename for unsaved
     // buffers and virtual (SAF) paths, which is the old behaviour.
-    const defaultPath = exportDefaultPath(activeOr()?.filePath, filename) ?? filename;
+    const defaultPath = exportDefaultPath(activeOr()?.filePath, filename, settings.defaultExportDir) ?? filename;
+    // Dev-only QA hook (like ?forcePlain): lets a self-test drive an export
+    // end to end without a native save panel. Stripped from release builds.
+    if (import.meta.env.DEV) {
+      const override = (window as unknown as { __solomdSavePathOverride?: string }).__solomdSavePathOverride;
+      if (override) return override;
+    }
     return await saveDialog({ defaultPath, filters });
   }
 
   function iosSavedToast(filename: string): string {
-    return `Saved to On My iPhone › SoloMD › ${filename}`;
+    return t('toast.savedToIos', { name: filename });
   }
 
   // Modern Clipboard API works on all desktops and on iOS 16+ WKWebView,
@@ -290,20 +283,22 @@ export function useExport() {
     const filename = `${ctx.baseName}.html`;
     const path = await pickWritePath(filename, [{ name: 'HTML', extensions: ['html'] }]);
     if (!path) return;
-    const tid = toasts.info('Exporting HTML…', 0);
+    const tid = toasts.info(t('toast.exportingFormat', { format: 'HTML' }), 0);
     try {
       const html = await buildStandaloneHtml({
         content: ctx.content,
         title: ctx.baseName,
         filePath: ctx.filePath,
-        plantumlServer: settings.plantumlEnabled ? settings.plantumlServer : null,
+        plantumlServer: plantumlServer(),
+        codeBlockLineNumbers: settings.codeBlockLineNumbers,
+        codeBlockWrap: settings.codeBlockWrap,
       });
       toasts.dismiss(tid);
       await invoke('write_file', { path, content: html, encoding: 'UTF-8' });
-      toasts.success(isIOS() ? iosSavedToast(filename) : 'Exported to HTML');
+      toasts.success(isIOS() ? iosSavedToast(filename) : t('toast.exportedTo', { format: 'HTML' }));
     } catch (e) {
       toasts.dismiss(tid);
-      toasts.error(`Export failed: ${e}`);
+      toasts.error(t('toast.exportFailedError', { error: String(e) }));
     }
   }
 
@@ -321,14 +316,15 @@ export function useExport() {
         ctx.filePath,
         settings.docxPreset,
         t('docx.contents'),
+        plantumlServer(),
       );
       const buffer = new Uint8Array(await blob.arrayBuffer());
       // Tauri 2 serializes Uint8Array as a number array which Rust accepts as Vec<u8>.
       await invoke('write_binary_file', { path, data: Array.from(buffer) });
-      toasts.success(isIOS() ? iosSavedToast(filename) : 'Exported to DOCX');
+      toasts.success(isIOS() ? iosSavedToast(filename) : t('toast.exportedTo', { format: 'DOCX' }));
     } catch (e) {
       console.error(e);
-      toasts.error(`DOCX export failed: ${e}`);
+      toasts.error(t('toast.formatExportFailed', { format: 'DOCX', error: String(e) }));
     }
   }
 
@@ -340,22 +336,29 @@ export function useExport() {
     const filename = `${ctx.baseName}.pdf`;
     const path = await pickWritePath(filename, [{ name: 'PDF', extensions: ['pdf'] }]);
     if (!path) return;
-    const tid = toasts.info('Generating PDF…', 0);
+    const tid = toasts.info(t('toast.generatingPdf'), 0);
     try {
       const pdfOpts = resolvePdfOptions(
         settings.pdfDefaults,
         ctx.content,
         userTouchedPdfDefaults(settings.pdfDefaults),
       );
-      const blob = await markdownToPdfBlob(ctx.content, ctx.baseName, pdfOpts, ctx.filePath);
+      const blob = await markdownToPdfBlob(
+        ctx.content,
+        ctx.baseName,
+        pdfOpts,
+        ctx.filePath,
+        plantumlServer(),
+        settings.codeBlockLineNumbers,
+      );
       const buffer = new Uint8Array(await blob.arrayBuffer());
       await invoke('write_binary_file', { path, data: Array.from(buffer) });
       toasts.dismiss(tid);
-      toasts.success(isIOS() ? iosSavedToast(filename) : 'Exported to PDF');
+      toasts.success(isIOS() ? iosSavedToast(filename) : t('toast.exportedTo', { format: 'PDF' }));
     } catch (e) {
       console.error(e);
       toasts.dismiss(tid);
-      toasts.error(`PDF export failed: ${e}`);
+      toasts.error(t('toast.formatExportFailed', { format: 'PDF', error: String(e) }));
     }
   }
 
@@ -416,10 +419,23 @@ export function useExport() {
    * native print (NSPrintOperation on macOS, WebView2 PrintAsync on Windows,
    * WebKitGTK print on Linux).
    */
-  async function exportPdfPrint() {
-    track('file_exported', { format: 'pdf_print' });
+  async function exportPdfPrint(options?: { forcePrintDialog?: boolean }) {
+    track('file_exported', { format: options?.forcePrintDialog ? 'print' : 'pdf_print' });
     const ctx = activeOr();
     if (!ctx) return;
+
+    // macOS: save the print layout straight to a file (print_webview_to_pdf)
+    // instead of opening the print sheet, which on a Mac without a printer
+    // asks the user to add one first — unless the user explicitly invoked
+    // `file.print` ("Print…") to open the native system print dialog.
+    // Ask where to save BEFORE mounting the print overlay, so cancelling
+    // leaves nothing behind.
+    const directPdf = !options?.forcePrintDialog && isMacOS() && !isIOS();
+    let directPath: string | null = null;
+    if (directPdf) {
+      directPath = await pickWritePath(`${ctx.baseName}.pdf`, [{ name: 'PDF', extensions: ['pdf'] }]);
+      if (!directPath) return;
+    }
 
     // Strip YAML front matter before rendering — users don't want the
     // metadata block to show up in the printed output.
@@ -435,8 +451,14 @@ export function useExport() {
     // so the print overlay (and therefore the resulting PDF from the system
     // print dialog) doesn't show `http://tauri.localhost/...` links.
     const imageRoot = extractImageRoot(source);
+    await loadRenderDeps(); // printed once — no placeholder math / plain code
+    const withLocalImages = await inlineLocalImages(
+      renderMarkdown(source),
+      imageRoot,
+      ctx.filePath,
+    );
     const body = rewriteLinkUrls(
-      rewriteImageUrls(renderMarkdown(source), imageRoot, ctx.filePath),
+      rewriteImageUrls(withLocalImages, imageRoot, ctx.filePath),
       imageRoot,
       ctx.filePath,
     );
@@ -459,6 +481,11 @@ export function useExport() {
       body,
       printTheme,
       printCss,
+      undefined,
+      {
+        codeBlockLineNumbers: settings.codeBlockLineNumbers,
+        codeBlockWrap: settings.codeBlockWrap,
+      },
     );
 
     // #301 — swap mermaid fences for SVGs and WAIT for them. This has to
@@ -478,7 +505,15 @@ export function useExport() {
         // never leave the overlay + `body.solomd-printing` mounted.
         console.error('[print] mermaid render failed', e);
       }
+      // PlantUML fences were printed as code: only the preview rendered them.
+      await renderPlantumlForExport(printContent, plantumlServer());
     }
+    // KaTeX faces load lazily, and while one is loading WebKit draws its text
+    // invisibly — print then captured math with the ∫ (KaTeX_Size2) or every
+    // italic letter (KaTeX_Math: E, m, c, x, dx) missing. Load the FontFace
+    // objects themselves; see print-fonts.ts for why descriptor strings like
+    // `16px KaTeX_Math` were not enough on WebKitGTK.
+    await waitForPrintFonts(printContent);
 
     // Give KaTeX / images a tick to apply layout before print.
     await new Promise((r) => setTimeout(r, 200));
@@ -503,6 +538,34 @@ export function useExport() {
       }
     }
     try {
+      if (directPath) {
+        const mmToPt = (mm: number) => (mm * 72) / 25.4;
+        const tid = toasts.info(t('toast.generatingPdf'), 0);
+        try {
+          await invoke('print_webview_to_pdf', {
+            path: directPath,
+            paper: pdfOpts.pageSizeMm
+              ? [mmToPt(pdfOpts.pageSizeMm.width), mmToPt(pdfOpts.pageSizeMm.height)]
+              : null,
+            // No margins chosen → the app's own "Normal" 15 mm. (The print
+            // sheet path passes 0 and relies on the printer's hardware
+            // margins; a direct save has none, so text touched the edge.)
+            margins: pdfOpts.marginMm
+              ? [
+                  mmToPt(pdfOpts.marginMm.top),
+                  mmToPt(pdfOpts.marginMm.right),
+                  mmToPt(pdfOpts.marginMm.bottom),
+                  mmToPt(pdfOpts.marginMm.left),
+                ]
+              : [mmToPt(15), mmToPt(15), mmToPt(15), mmToPt(15)],
+          });
+        } finally {
+          toasts.dismiss(tid);
+        }
+        cleanup();
+        toasts.success(t('toast.exportedTo', { format: 'PDF' }));
+        return;
+      }
       await invoke('print_webview');
       // The native print sheet is modal; by the time invoke resolves,
       // the user has already dismissed it. Safe to tear down shortly after.
@@ -515,15 +578,20 @@ export function useExport() {
       // rejected, the editor was left under the print-mode body state and
       // felt unresponsive ("mouse input dead after an export error" on macOS).
       cleanup();
-      toasts.error(`Print failed: ${e}`);
+      if (isMobile() && !options?.forcePrintDialog) {
+        await exportPdf();
+        return;
+      }
+      toasts.error(t('toast.printFailed', { error: String(e) }));
     }
   }
 
   async function copyAsHtml() {
     const src = copySource();
     if (!src) return;
+    await loadRenderDeps();
     const html = renderMarkdown(src.source);
-    const okMsg = src.isSelection ? 'Copied selection as HTML' : 'Copied as HTML';
+    const okMsg = t(src.isSelection ? 'toast.copiedSelectionAsHtml' : 'toast.copiedAsHtml');
     // Native Clipboard API first — supports rich HTML on all desktops and on
     // iOS 16+. Tauri's `writeHtml` is unimplemented on iOS so we'd otherwise
     // fall through to plain text and lose formatting.
@@ -531,7 +599,7 @@ export function useExport() {
       try {
         const item = new ClipboardItem({
           'text/html': new Blob([html], { type: 'text/html' }),
-          'text/plain': new Blob([src.source], { type: 'text/plain' }),
+          'text/plain': new Blob([stripMarkdown(src.source)], { type: 'text/plain' }),
         });
         await navigator.clipboard.write([item]);
         toasts.success(okMsg);
@@ -547,10 +615,44 @@ export function useExport() {
       // Fallback: write plain HTML string as text
       try {
         await writeText(html);
-        toasts.success(src.isSelection ? 'Copied selection HTML source' : 'Copied HTML source');
+        toasts.success(t(src.isSelection ? 'toast.copiedSelectionHtmlSource' : 'toast.copiedHtmlSource'));
       } catch (e2) {
-        toasts.error(`Copy failed: ${e2}`);
+        toasts.error(t('toast.copyFailed', { error: String(e2) }));
       }
+    }
+  }
+
+  /**
+   * #427 — Copy rendered Markdown as Word-ready rich HTML + MathML so pasting
+   * into Microsoft Word / WPS Office preserves native equations, multi-line
+   * code blocks, bordered tables, and per-section ordered list numbering.
+   */
+  async function copyAsWord() {
+    const src = copySource();
+    if (!src) return;
+    await loadRenderDeps();
+    const { buildWordClipboardHtml } = await import('../lib/word-clipboard');
+    const wordHtml = buildWordClipboardHtml(renderMarkdown(src.source));
+    const plain = stripMarkdown(src.source);
+    const okMsg = t(src.isSelection ? 'toast.copiedSelectionAsWord' : 'toast.copiedAsWord');
+    if (hasNativeClipboardWrite()) {
+      try {
+        const item = new ClipboardItem({
+          'text/html': new Blob([wordHtml], { type: 'text/html' }),
+          'text/plain': new Blob([plain], { type: 'text/plain' }),
+        });
+        await navigator.clipboard.write([item]);
+        toasts.success(okMsg);
+        return;
+      } catch {
+        // fall through to Tauri plugin
+      }
+    }
+    try {
+      await writeHtml(wordHtml, plain);
+      toasts.success(okMsg);
+    } catch (e) {
+      toasts.error(t('toast.copyFailed', { error: String(e) }));
     }
   }
 
@@ -558,24 +660,24 @@ export function useExport() {
     const src = copySource();
     if (!src) return;
     const text = stripMarkdown(src.source);
-    const okMsg = src.isSelection ? 'Copied selection as plain text' : 'Copied as plain text';
+    const okMsg = t(src.isSelection ? 'toast.copiedSelectionAsPlain' : 'toast.copiedAsPlain');
     try {
       await writeText(text);
       toasts.success(okMsg);
     } catch (e) {
-      toasts.error(`Copy failed: ${e}`);
+      toasts.error(t('toast.copyFailed', { error: String(e) }));
     }
   }
 
   async function copyAsMarkdown() {
     const src = copySource();
     if (!src) return;
-    const okMsg = src.isSelection ? 'Copied selection as Markdown' : 'Copied as Markdown';
+    const okMsg = t(src.isSelection ? 'toast.copiedSelectionAsMarkdown' : 'toast.copiedAsMarkdown');
     try {
       await writeText(src.source);
       toasts.success(okMsg);
     } catch (e) {
-      toasts.error(`Copy failed: ${e}`);
+      toasts.error(t('toast.copyFailed', { error: String(e) }));
     }
   }
 
@@ -597,10 +699,12 @@ export function useExport() {
       : `${ctx.baseName}.png`;
     const path = await pickWritePath(filename, [{ name: 'PNG Image', extensions: ['png'] }]);
     if (!path) return;
-    const tid = toasts.info(isSelection ? 'Generating selection image…' : 'Generating image…', 0);
+    const tid = toasts.info(t(isSelection ? 'toast.generatingSelectionImage' : 'toast.generatingImage'), 0);
     try {
       const blob = await markdownToImageBlob(source, ctx.baseName, ctx.filePath, {
         branding: settings.imageExportBranding,
+        codeBlockLineNumbers: settings.codeBlockLineNumbers,
+        codeBlockWrap: settings.codeBlockWrap,
       });
       const buffer = new Uint8Array(await blob.arrayBuffer());
       await invoke('write_binary_file', { path, data: Array.from(buffer) });
@@ -608,13 +712,13 @@ export function useExport() {
       const msg = isIOS()
         ? iosSavedToast(filename)
         : isSelection
-          ? 'Exported selection to PNG image'
-          : 'Exported to PNG image';
+          ? t('toast.exportedSelectionPng')
+          : t('toast.exportedPng');
       toasts.success(msg);
     } catch (e) {
       console.error(e);
       toasts.dismiss(tid);
-      toasts.error(`Image export failed: ${e}`);
+      toasts.error(t('toast.imageExportFailed', { error: String(e) }));
     }
   }
 
@@ -625,53 +729,68 @@ export function useExport() {
     const sel = getEditorSelectionMd(ctx.content);
     const source = sel ?? ctx.content;
     const isSelection = sel !== null;
-    const tid = toasts.info(isSelection ? 'Capturing selection…' : 'Capturing image…', 0);
+    const tid = toasts.info(t(isSelection ? 'toast.capturingSelection' : 'toast.capturingImage'), 0);
+    // Rendering and the clipboard fail for different reasons, and only a
+    // clipboard failure is worth a Save dialog. A render failure used to
+    // open one anyway, render again, fail again — and on Linux the user saw
+    // a Save dialog that wrote nothing.
+    let blob: Blob;
     try {
-      const blob = await markdownToImageBlob(source, ctx.baseName, ctx.filePath, {
+      blob = await markdownToImageBlob(source, ctx.baseName, ctx.filePath, {
         branding: settings.imageExportBranding,
       });
-
-      // Native Clipboard API supports `image/png` on iOS 16+ and all
-      // desktops. Tauri's `writeImage` is unimplemented on iOS so we'd
-      // otherwise fall through to the save-as fallback.
-      if (hasNativeClipboardWrite()) {
-        try {
-          const item = new ClipboardItem({ 'image/png': blob });
-          await navigator.clipboard.write([item]);
-          toasts.dismiss(tid);
-          toasts.success(isSelection ? 'Copied selection as image' : 'Copied as image');
-          return;
-        } catch {
-          // fall through to Tauri plugin
-        }
+    } catch (e) {
+      console.error(e);
+      toasts.dismiss(tid);
+      toasts.error(t('toast.copyImageFailed', { error: String(e) }));
+      return;
+    }
+    let clipboardError: unknown = null;
+    // Native Clipboard API supports `image/png` on iOS 16+ and all
+    // desktops. Tauri's `writeImage` is unimplemented on iOS so we'd
+    // otherwise fall through to the save-as fallback.
+    if (hasNativeClipboardWrite()) {
+      try {
+        const item = new ClipboardItem({ 'image/png': blob });
+        await navigator.clipboard.write([item]);
+        toasts.dismiss(tid);
+        toasts.success(t(isSelection ? 'toast.copiedSelectionAsImage' : 'toast.copiedAsImage'));
+        return;
+      } catch (e) {
+        clipboardError = e;
+        // fall through to Tauri plugin
       }
-
+    }
+    try {
       const bytes = new Uint8Array(await blob.arrayBuffer());
       const img = await Image.fromBytes(bytes);
       await writeImage(img);
       toasts.dismiss(tid);
-      toasts.success(isSelection ? 'Copied selection as image' : 'Copied as image');
+      toasts.success(t(isSelection ? 'toast.copiedSelectionAsImage' : 'toast.copiedAsImage'));
+      return;
     } catch (e) {
-      console.error(e);
-      toasts.dismiss(tid);
-      // Fallback: save to file instead
-      try {
-        const filename = `${ctx.baseName}.png`;
-        const path = await pickWritePath(filename, [{ name: 'PNG Image', extensions: ['png'] }]);
-        if (path) {
-          const blob2 = await markdownToImageBlob(source, ctx.baseName, ctx.filePath, {
-            branding: settings.imageExportBranding,
-          });
-          const buffer = new Uint8Array(await blob2.arrayBuffer());
-          await invoke('write_binary_file', { path, data: Array.from(buffer) });
-          toasts.success(isIOS() ? iosSavedToast(filename) : 'Clipboard failed — saved as PNG instead');
-        } else {
-          toasts.error(`Copy image failed: ${e}`);
-        }
-      } catch (e2) {
-        toasts.error(`Copy image failed: ${e}`);
-      }
+      clipboardError = e;
     }
+    console.error('[copy image] clipboard unavailable', clipboardError);
+    toasts.dismiss(tid);
+    // Fallback: save the image we already rendered to a file instead.
+    try {
+      const filename = `${ctx.baseName}.png`;
+      const path = await pickWritePath(filename, [{ name: 'PNG Image', extensions: ['png'] }]);
+      if (!path) {
+        toasts.error(t('toast.copyImageFailed', { error: String(clipboardError) }));
+        return;
+      }
+      const buffer = new Uint8Array(await blob.arrayBuffer());
+      await invoke('write_binary_file', { path, data: Array.from(buffer) });
+      toasts.success(isIOS() ? iosSavedToast(filename) : t('toast.clipboardSavedPng'));
+    } catch (e2) {
+      toasts.error(t('toast.copyImageFailed', { error: String(e2) }));
+    }
+  }
+
+  async function printDocument() {
+    await exportPdfPrint({ forcePrintDialog: true });
   }
 
   return {
@@ -679,8 +798,10 @@ export function useExport() {
     exportDocx,
     exportPdf,
     exportPdfPrint,
+    printDocument,
     exportImage,
     copyAsHtml,
+    copyAsWord,
     copyAsPlainText,
     copyAsMarkdown,
     copyAsImage,

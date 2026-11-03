@@ -107,6 +107,35 @@ jobs:
           projectPath: app
           tagName: ${{ github.ref_name }}
           releaseName: 'SoloMD ${{ github.ref_name }}'
+          releaseBody: |
+            ## SoloMD ${{ github.ref_name }}
+
+            > ⭐ **Like SoloMD? [Star it on GitHub](https://github.com/zhitongblog/solomd)** — it's free, made by one developer, and stars are how other people find it.
+            > 觉得好用？请[去 GitHub 点个 Star](https://github.com/zhitongblog/solomd) —— 免费开源、一个人维护，Star 能让更多人发现它。
+            >
+            > 📣 Wrote about SoloMD or recommended it? [Get listed as a promoter](https://solomd.app/promote) · 写过、推荐过 SoloMD？[登记成为推广者](https://solomd.app/zh/promote)
+
+            ### What's new / 更新内容
+
+            https://solomd.app/whats-new · [中文](https://solomd.app/zh/whats-new)
+
+            ### Install / 安装
+
+            - **macOS**: download `.dmg`, drag SoloMD to `/Applications`
+            - **Windows**: download `.msi`. On first launch you may see "Windows protected your PC" → click **More info** → **Run anyway** (one-time, until SmartScreen reputation builds). 首次运行点 "更多信息" → "仍要运行" 即可
+            - **Linux**: download `.AppImage` (`chmod +x` and run) or `.deb` / `.rpm`
+
+            ### Verify / 校验
+
+            The Windows builds are not code-signed yet, so Chrome's Enhanced
+            Protection scans each new release and reports "No viruses detected"
+            — that is a pass, not a warning. `SHA256SUMS.txt` is attached below
+            if you want to verify the download yourself.
+
+            Windows 版尚未代码签名，Chrome「增强保护」会扫描每个新版本并提示
+            "未检测到病毒" —— 这是通过，不是警告。附件 `SHA256SUMS.txt` 可用于自行校验。
+
+            🤖 Auto-built by GitHub Actions
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}

@@ -44,6 +44,8 @@ import type { Range } from '@codemirror/state';
 // tree-walk fields we touch rather than importing the real type.
 export interface MdSyntaxNode {
   name: string;
+  from: number;
+  to: number;
   parent: MdSyntaxNode | null;
   firstChild: MdSyntaxNode | null;
   nextSibling: MdSyntaxNode | null;
@@ -122,6 +124,12 @@ function inlineHtmlMark(kind: LiveInlineHtmlKind): Decoration {
 const lineClass = (cls: string) => Decoration.line({ class: cls });
 const quoteLine = lineClass('cm-md-quote-line');
 const fencedLine = lineClass('cm-md-fenced-line');
+// 5.0 §5 — quotes and code blocks are rounded cards. Each line paints its own
+// background, so the first and last line of a block carry the corners (and
+// the card's inner top/bottom padding). Line decorations on the same line
+// merge their classes, so these ride alongside quoteLine / fencedLine.
+const blockFirstLine = lineClass('cm-md-block-first');
+const blockLastLine = lineClass('cm-md-block-last');
 const headingLine = (level: number) => lineClass(`cm-md-heading-line cm-md-heading-line-${level}`);
 
 const hideDeco = Decoration.replace({});
@@ -306,8 +314,9 @@ const HEADING_LEVELS: Record<string, number> = {
 
 function buildDecorations(view: EditorView, showMarkers = false): DecorationSet {
   const sel = view.state.selection.main;
-  const fromLine = view.state.doc.lineAt(sel.from).number;
-  const toLine = view.state.doc.lineAt(sel.to).number;
+  const dragging = isDragging(view.state);
+  const fromLine = dragging ? -1 : view.state.doc.lineAt(sel.from).number;
+  const toLine = dragging ? -1 : view.state.doc.lineAt(sel.to).number;
   const tree = syntaxTree(view.state);
 
   // We collect into a flat list of `Range<Decoration>` and then call
@@ -321,6 +330,7 @@ function buildDecorations(view: EditorView, showMarkers = false): DecorationSet 
   const seenFencedLines = new Set<number>();
   const seenCopyBlocks = new Set<number>();
   const seenHeadingLines = new Set<number>();
+  const seenListLines = new Set<number>();
   const seenInlineHtmlLines = new Set<number>();
 
   for (const { from, to } of view.visibleRanges) {
@@ -336,6 +346,14 @@ function buildDecorations(view: EditorView, showMarkers = false): DecorationSet 
           Math.min(nTo, view.state.doc.length),
         ).number;
         const caretTouches = lineEndAtNode >= fromLine && lineAtNode <= toLine;
+
+        // #506 — When `showMarkers` is off and the caret is off this line,
+        // `liveBlocksExtension` replaces the entire `Image` range with an
+        // `ImageWidget`. Skip emitting overlapping `hideDeco` replacements on
+        // the `![`, `]`, `(`, `URL`, `)` child nodes inside `Image`.
+        if (name === 'Image' && !showMarkers && !caretTouches) {
+          return false;
+        }
 
         // ---- Marker hiding (off-line only) ----
         if (HIDDEN_MARK_NODES.has(name)) {
@@ -368,13 +386,26 @@ function buildDecorations(view: EditorView, showMarkers = false): DecorationSet 
         }
 
         // ---- URL: hide only when it's the destination part of a real
-        //      `[label](url)` link. Autolinks (`<https://x.com>`) make
-        //      the URL the visible text, so we leave it alone there. ----
+        //      `[label](url)` link. Bare GFM URLs (`https://x.com`) and
+        //      autolinks (`<https://x.com>`) make the URL the visible link
+        //      text, so they get `linkMark` (#431). ----
         if (name === 'URL') {
           const parent = node.node.parent;
-          const inLabeledLink = parent && parent.name === 'Link';
-          if (inLabeledLink && !showMarkers && !caretTouches && nTo > nFrom) {
-            ranges.push(hideDeco.range(nFrom, nTo));
+          // GFM also emits a URL node for a URL-valued label (#395).
+          // Only the URL immediately following `(` is the destination.
+          const previous = node.node.prevSibling;
+          const inLabeledLink =
+            (parent?.name === 'Link' || parent?.name === 'Image') &&
+            previous?.name === 'LinkMark' &&
+            view.state.doc.sliceString(previous.from, previous.to) === '(';
+          if (inLabeledLink) {
+            if (!showMarkers && !caretTouches && nTo > nFrom) {
+              ranges.push(hideDeco.range(nFrom, nTo));
+            } else if (nTo > nFrom) {
+              ranges.push(markerMark.range(nFrom, nTo));
+            }
+          } else if (nTo > nFrom) {
+            ranges.push(linkMark.range(nFrom, nTo));
           }
           return;
         }
@@ -432,6 +463,8 @@ function buildDecorations(view: EditorView, showMarkers = false): DecorationSet 
             if (!seenQuoteLines.has(lineObj.from)) {
               seenQuoteLines.add(lineObj.from);
               ranges.push(quoteLine.range(lineObj.from));
+              if (ln === startLine) ranges.push(blockFirstLine.range(lineObj.from));
+              if (ln === endLine) ranges.push(blockLastLine.range(lineObj.from));
             }
           }
           return;
@@ -443,11 +476,82 @@ function buildDecorations(view: EditorView, showMarkers = false): DecorationSet 
           const endLine = view.state.doc.lineAt(
             Math.min(nTo, view.state.doc.length),
           ).number;
+          const isFenced = name === 'FencedCode';
+          const firstLineObj = view.state.doc.line(startLine);
+          const fenceIndentCols = isFenced ? Math.max(0, nFrom - firstLineObj.from) : 0;
+          let fencedMarginLeft = '';
+          if (fenceIndentCols > 0) {
+            let indentEm = Math.min(8, fenceIndentCols * 0.58);
+            let cur = (node.node as unknown as MdSyntaxNode).parent;
+            while (cur) {
+              if (cur.name === 'ListItem') {
+                for (let ch = cur.firstChild; ch; ch = ch.nextSibling) {
+                  if (ch.name === 'ListMark') {
+                    const markLine = view.state.doc.lineAt(ch.from);
+                    const mark = view.state.doc.sliceString(ch.from, ch.to);
+                    const isBullet = mark === '-' || mark === '*' || mark === '+';
+                    const leadSpaces = ch.from - markLine.from;
+                    const markLen = ch.to - ch.from;
+                    const markEm = isBullet
+                      ? 1.25
+                      : markLen <= 3
+                        ? 2.25
+                        : Math.min(6, markLen * 0.65 + 0.55);
+                    indentEm = isBullet
+                      ? Math.min(6, Math.max(1.15, leadSpaces * 0.55 + 1.15))
+                      : Math.min(8, leadSpaces * 0.55 + markEm);
+                    break;
+                  }
+                }
+                break;
+              }
+              cur = cur.parent;
+            }
+            // `.cm-md-fenced-line` sets `font-size: 0.8125em`, so scale `em`
+            // by `1 / 0.8125` to match the list item's parent-font `em` indent.
+            fencedMarginLeft = `${(indentEm / 0.8125).toFixed(2)}em`;
+          }
+          const bodyStart = isFenced ? startLine + 1 : startLine;
+          const hasClosingFence =
+            isFenced &&
+            endLine > startLine &&
+            /^\s*(`{3,}|~{3,})\s*$/.test(view.state.doc.line(endLine).text);
+          const bodyEnd = hasClosingFence ? endLine - 1 : endLine;
           for (let ln = startLine; ln <= endLine; ln++) {
             const lineObj = view.state.doc.line(ln);
             if (!seenFencedLines.has(lineObj.from)) {
               seenFencedLines.add(lineObj.from);
-              ranges.push(fencedLine.range(lineObj.from));
+              const leadingSpaces = /^[ ]*/.exec(lineObj.text)?.[0].length ?? 0;
+              const stripCols = !showMarkers && fenceIndentCols > 0
+                ? Math.min(fenceIndentCols, leadingSpaces)
+                : 0;
+              const styleParts: string[] = [];
+              if (fencedMarginLeft) styleParts.push(`margin-left: ${fencedMarginLeft};`);
+              if (stripCols > 0) styleParts.push(`text-indent: -${stripCols}ch;`);
+              const styleAttr = styleParts.length > 0 ? styleParts.join(' ') : undefined;
+              if (ln >= bodyStart && ln <= bodyEnd) {
+                const attrs: Record<string, string> = {
+                  'data-cb-line': String(ln - bodyStart + 1),
+                };
+                if (styleAttr) attrs.style = styleAttr;
+                ranges.push(
+                  Decoration.line({
+                    class: 'cm-md-fenced-line cm-md-fenced-body-line',
+                    attributes: attrs,
+                  }).range(lineObj.from),
+                );
+              } else if (styleAttr) {
+                ranges.push(
+                  Decoration.line({
+                    class: 'cm-md-fenced-line',
+                    attributes: { style: styleAttr },
+                  }).range(lineObj.from),
+                );
+              } else {
+                ranges.push(fencedLine.range(lineObj.from));
+              }
+              if (ln === startLine) ranges.push(blockFirstLine.range(lineObj.from));
+              if (ln === endLine) ranges.push(blockLastLine.range(lineObj.from));
             }
           }
           // v4.11.18 — the copy button rides the block's first line and is
@@ -480,22 +584,79 @@ function buildDecorations(view: EditorView, showMarkers = false): DecorationSet 
           return;
         }
 
-        // ---- List markers (v4.7.1) ----
+        // ---- List markers (v4.7.1) + hanging indent (#469) ----
         // Bullets (`-`/`*`/`+`) become a • glyph; ordered numbers stay; a
         // task item's dash is hidden so the checkbox widget leads. Revealed
         // (raw) on the caret line so the marker stays editable.
+        // #469: apply a matched `padding-left: X; text-indent: -X` line
+        // decoration so soft-wrapped continuation lines hang aligned with the
+        // list item body instead of wrapping back under the number/bullet.
         if (name === 'ListMark') {
-          if (showMarkers || caretTouches || nTo <= nFrom) return;
+          const lineObj = view.state.doc.lineAt(nFrom);
           const mark = view.state.doc.sliceString(nFrom, nTo);
           const isBullet = mark === '-' || mark === '*' || mark === '+';
-          if (!isBullet) return; // ordered list ("1.", "2)") keeps its number
-          if (listItemHasTask(node.node as unknown as MdSyntaxNode)) {
-            // Hide "- " (dash + trailing space) — the checkbox renders the item.
-            const after = view.state.doc.sliceString(
-              nTo,
-              Math.min(nTo + 1, view.state.doc.length),
+          const isTask = isBullet && listItemHasTask(node.node as unknown as MdSyntaxNode);
+          const after = view.state.doc.sliceString(
+            nTo,
+            Math.min(nTo + 1, view.state.doc.length),
+          );
+          const prefixTo = after === ' ' ? nTo + 1 : nTo;
+          if (!seenListLines.has(lineObj.from)) {
+            seenListLines.add(lineObj.from);
+            const leadSpaces = nFrom - lineObj.from;
+            const markLen = nTo - nFrom;
+            // #486 — Use a uniform column width (2.25em) for 1–2 digit ordered
+            // list markers (`1.`..`99.`) so single- and double-digit items in
+            // the same list share the exact same body text start X coordinate
+            // without overflowing on 2-digit Level-1 markers (`10. `..`99. `).
+            const markEm = isBullet
+              ? 1.25
+              : markLen <= 3
+                ? 2.25
+                : Math.min(6, markLen * 0.65 + 0.55);
+            const indentEm = Math.min(8, leadSpaces * 0.55 + markEm);
+            const indentStr = `${indentEm.toFixed(2)}em`;
+            ranges.push(
+              Decoration.line({
+                class: 'cm-md-list-line',
+                attributes: {
+                  style: `padding-left: ${indentStr}; text-indent: -${indentStr};`,
+                },
+              }).range(lineObj.from),
             );
-            ranges.push(hideDeco.range(nFrom, after === ' ' ? nTo + 1 : nTo));
+            // #486 — Wrap the list prefix (leading spaces + marker + trailing
+            // space) in an inline-block span of width `indentStr` (`text-indent: 0`)
+            // so the first line's body text starts at the exact same X offset
+            // (`indentStr`) as soft-wrapped continuation lines (`padding-left`).
+            // `white-space: pre` ensures the marker + trailing space can never
+            // wrap onto a second line inside the inline-block (#10).
+            if (!isTask && after === ' ') {
+              let leadFrom = nFrom;
+              while (
+                leadFrom > lineObj.from &&
+                view.state.doc.sliceString(leadFrom - 1, leadFrom) === ' '
+              ) {
+                leadFrom--;
+              }
+              const prefixWidthEm =
+                leadFrom === lineObj.from
+                  ? indentEm
+                  : Math.min(8, (nFrom - leadFrom) * 0.55 + markEm);
+              ranges.push(
+                Decoration.mark({
+                  class: 'cm-md-list-prefix',
+                  attributes: {
+                    style: `display: inline-block; width: ${prefixWidthEm.toFixed(2)}em; text-indent: 0; white-space: pre; font-variant-numeric: tabular-nums;`,
+                  },
+                }).range(leadFrom, prefixTo),
+              );
+            }
+          }
+          if (showMarkers || caretTouches || nTo <= nFrom) return;
+          if (!isBullet) return; // ordered list ("1.", "2)") keeps its number
+          if (isTask) {
+            // Hide "- " (dash + trailing space) — the checkbox renders the item.
+            ranges.push(hideDeco.range(nFrom, prefixTo));
           } else {
             ranges.push(bulletDeco.range(nFrom, nTo));
           }
@@ -506,6 +667,16 @@ function buildDecorations(view: EditorView, showMarkers = false): DecorationSet 
         if (name === 'HorizontalRule') {
           if (showMarkers || caretTouches || nTo <= nFrom) return;
           ranges.push(hrDeco.range(nFrom, nTo));
+          return;
+        }
+
+        // ---- Backslash escapes (`\#`, `\*`, `\[`, etc.) ----
+        if (name === 'Escape' && nTo - nFrom >= 2) {
+          if (showMarkers || caretTouches) {
+            ranges.push(markerMark.range(nFrom, nFrom + 1));
+          } else {
+            ranges.push(hideDeco.range(nFrom, nFrom + 1));
+          }
           return;
         }
       },
@@ -579,7 +750,8 @@ const makeLiveRenderPlugin = (showMarkers: boolean) => ViewPlugin.fromClass(
       // so Windows WebView2 doesn't lose pointer capture mid-selection.
       const dragEnded = u.transactions.some(isDragEndTransaction);
       const imeFlush = u.transactions.some(isImeSafeFlushTransaction);
-      if (u.docChanged || u.viewportChanged || dragEnded || imeFlush) {
+      const treeChanged = syntaxTree(u.state) !== syntaxTree(u.startState);
+      if (u.docChanged || u.viewportChanged || dragEnded || imeFlush || treeChanged) {
         this.decorations = buildDecorations(u.view, showMarkers);
         return;
       }
@@ -596,22 +768,23 @@ const makeLiveRenderPlugin = (showMarkers: boolean) => ViewPlugin.fromClass(
 // Rich syntax highlighting — same palette as cm-live-preview.ts but kept
 // here so live-edit can be used independently of the live-preview toggle.
 const liveEditHighlightStyle = HighlightStyle.define([
-  { tag: t.heading1, fontWeight: '700', color: 'var(--md-h1)' },
-  { tag: t.heading2, fontWeight: '700', color: 'var(--md-h2)' },
-  { tag: t.heading3, fontWeight: '700', color: 'var(--md-h3)' },
-  { tag: t.heading4, fontWeight: '700', color: 'var(--md-h4)' },
-  { tag: t.heading5, fontWeight: '700', color: 'var(--md-h5)' },
-  { tag: t.heading6, fontWeight: '700', color: 'var(--md-h6)' },
+  // 5.0 — weights follow the §2 scale; list ITEM text stays body colour
+  // (lezer tags the whole item `list`), only the marks are muted.
+  { tag: t.heading1, fontWeight: '650', color: 'var(--md-h1)' },
+  { tag: t.heading2, fontWeight: '620', color: 'var(--md-h2)' },
+  { tag: t.heading3, fontWeight: '600', color: 'var(--md-h3)' },
+  { tag: t.heading4, fontWeight: '600', color: 'var(--md-h4)' },
+  { tag: t.heading5, fontWeight: '600', color: 'var(--md-h5)' },
+  { tag: t.heading6, fontWeight: '600', color: 'var(--md-h6)' },
   { tag: t.strong, fontWeight: '700', color: 'var(--md-strong)' },
   { tag: t.emphasis, fontStyle: 'italic', color: 'var(--md-em)' },
   { tag: t.strikethrough, textDecoration: 'line-through', color: 'var(--text-muted)' },
-  { tag: t.link, color: 'var(--md-link)' },
-  { tag: t.url, color: 'var(--md-url)' },
-  { tag: t.monospace, fontFamily: 'var(--font-mono)', color: 'var(--md-code)' },
-  { tag: t.quote, color: 'var(--md-quote)', fontStyle: 'italic' },
-  { tag: t.list, color: 'var(--md-list)' },
-  { tag: t.contentSeparator, color: 'var(--md-hr)' },
-  { tag: t.processingInstruction, color: 'var(--text-faint)' },
+  { tag: t.link, color: 'var(--accent-text)' },
+  { tag: t.url, color: 'var(--accent-text)' },
+  { tag: t.monospace, fontFamily: 'var(--font-mono)', color: 'var(--text)' },
+  { tag: t.quote, color: 'var(--text-2)' },
+  { tag: t.contentSeparator, color: 'var(--text-3)' },
+  { tag: t.processingInstruction, color: 'var(--text-3)' },
   // Code-block syntax (nested languages)
   { tag: t.keyword, color: 'var(--syn-keyword)' },
   { tag: t.string, color: 'var(--syn-string)' },
@@ -652,25 +825,28 @@ const liveEditTheme = EditorView.theme({
   // line breaks CodeMirror's posAtCoords math (it caches line-box metrics
   // measured against the base lineHeight), making click-to-position land
   // on the wrong line. Keep line-height uniform at the .cm-scroller base.
+  // 5.0 §2 type scale — H1 30/650 −0.015em, H2 20/620, H3 17/600 at the
+  // 16px default, written in em so the user's font size scales them.
   '.cm-md-heading-line-1': {
-    fontSize: '1.85em',
-    fontWeight: '700',
-    paddingTop: '0.4em',
-    paddingBottom: '0.15em',
-  },
-  '.cm-md-heading-line-2': {
-    fontSize: '1.5em',
-    fontWeight: '700',
-    paddingTop: '0.3em',
+    fontSize: '1.875em',
+    fontWeight: '650',
+    letterSpacing: '-0.015em',
+    paddingTop: '0.2em',
     paddingBottom: '0.1em',
   },
-  '.cm-md-heading-line-3': {
-    fontSize: '1.22em',
-    fontWeight: '700',
+  '.cm-md-heading-line-2': {
+    fontSize: '1.25em',
+    fontWeight: '620',
+    paddingTop: '0.3em',
   },
-  '.cm-md-heading-line-4': { fontSize: '1.1em', fontWeight: '700' },
-  '.cm-md-heading-line-5': { fontWeight: '700' },
-  '.cm-md-heading-line-6': { fontWeight: '700', color: 'var(--text-muted)' },
+  '.cm-md-heading-line-3': {
+    fontSize: '1.0625em',
+    fontWeight: '600',
+    paddingTop: '0.2em',
+  },
+  '.cm-md-heading-line-4': { fontWeight: '600' },
+  '.cm-md-heading-line-5': { fontWeight: '600' },
+  '.cm-md-heading-line-6': { fontWeight: '600', color: 'var(--text-2)' },
 
   // Heading text color (from the heading mark). The line decoration sets
   // size; this paints the color so emphasis/strong inside a heading
@@ -701,24 +877,31 @@ const liveEditTheme = EditorView.theme({
     padding: '0.05em 0.3em',
   },
 
+  // 5.0 §5 — inline code: --fill-1 chip, body colour (not red).
   '.cm-md-code': {
     fontFamily: 'var(--font-mono)',
-    color: 'var(--md-code)',
-    backgroundColor: 'var(--md-code-bg)',
-    padding: '0.1em 0.35em',
-    borderRadius: '4px',
+    fontSize: '0.875em',
+    color: 'var(--text)',
+    backgroundColor: 'var(--fill-1)',
+    padding: '0.12em 0.35em',
+    borderRadius: 'var(--r-xs)',
   },
 
   '.cm-md-link': {
-    color: 'var(--md-link)',
+    color: 'var(--accent-text)',
     textDecoration: 'underline',
-    textUnderlineOffset: '2px',
+    textDecorationColor: 'color-mix(in srgb, var(--accent-text) 35%, transparent)',
+    textUnderlineOffset: '3px',
+    cursor: 'pointer',
   },
 
   // v4.7.1 — bullet glyph that replaces a `-`/`*`/`+` list marker off-line.
   '.cm-md-bullet': {
-    color: 'var(--md-list)',
+    color: 'var(--text-3)',
     fontWeight: '700',
+  },
+  '.cm-md-list-prefix': {
+    whiteSpace: 'pre',
   },
 
   // v4.7.1 — `---` / `***` / `___` rendered as a real rule off-line. The
@@ -729,23 +912,55 @@ const liveEditTheme = EditorView.theme({
     height: '0',
     margin: '0.2em 0',
     border: 'none',
-    borderTop: '1px solid var(--border)',
+    borderTop: '1px solid var(--hairline)',
     verticalAlign: 'middle',
   },
 
+  // 5.0 §5 — quote: an --bg-elev card, 10px corners, no left bar, --text-2.
   '.cm-md-quote-line': {
-    borderLeft: '3px solid var(--border)',
-    paddingLeft: '12px',
-    color: 'var(--md-quote)',
-    fontStyle: 'italic',
-    backgroundColor: 'var(--bg-elev, transparent)',
+    padding: '0 16px',
+    color: 'var(--text-2)',
+    backgroundColor: 'var(--bg-elev)',
   },
 
+  // 5.0 §5 — code block: --bg-elev card, 10px corners, 13px mono.
   '.cm-md-fenced-line': {
-    backgroundColor: 'var(--md-code-bg)',
+    padding: '0 16px',
+    backgroundColor: 'var(--bg-elev)',
     fontFamily: 'var(--font-mono)',
+    fontSize: '0.8125em',
     // Containing block for the copy button that rides the block's first line.
     position: 'relative',
+  },
+  '.cm-md-block-first': {
+    paddingTop: '10px',
+    borderTopLeftRadius: 'var(--r-lg)',
+    borderTopRightRadius: 'var(--r-lg)',
+  },
+  '.cm-md-block-last': {
+    paddingBottom: '10px',
+    borderBottomLeftRadius: 'var(--r-lg)',
+    borderBottomRightRadius: 'var(--r-lg)',
+  },
+  // A code block's first and last lines are its (hidden) fences, which are
+  // already a line of air each — the card needs no extra inset there.
+  '.cm-md-fenced-line.cm-md-block-first': { paddingTop: '2px' },
+  '.cm-md-fenced-line.cm-md-block-last': { paddingBottom: '2px' },
+  // #454 — code block line numbers in CodeMirror Live-Edit mode when enabled.
+  '.cb-numbered-on & .cm-md-fenced-line.cm-md-fenced-body-line': {
+    paddingLeft: '3.6em',
+  },
+  '.cb-numbered-on & .cm-md-fenced-line.cm-md-fenced-body-line::before': {
+    content: 'attr(data-cb-line)',
+    position: 'absolute',
+    left: '0',
+    width: '2.6em',
+    paddingRight: '0.6em',
+    textAlign: 'right',
+    color: 'var(--text-faint)',
+    borderRight: '1px solid var(--border)',
+    userSelect: 'none',
+    pointerEvents: 'none',
   },
 
   // v4.11.18 — code-block copy button. Same visual language as the preview
@@ -754,7 +969,7 @@ const liveEditTheme = EditorView.theme({
   '.cm-md-code-copy': {
     position: 'absolute',
     zIndex: '3',
-    top: '1px',
+    top: '6px',
     right: '8px',
     minWidth: '42px',
     height: '20px',
@@ -785,9 +1000,12 @@ const liveEditTheme = EditorView.theme({
   // readable through the highlight. (The same fix already lives in
   // cm-live-preview.ts — the earlier patches only covered that mode, not
   // this one, which is the WYSIWYG "live edit" the reporters actually use.)
-  '.cm-selectionLayer': { zIndex: '2 !important' },
+  // #368 — raised above the text, the selection rectangles would intercept
+  // clicks inside the selection (CodeMirror never sees the mousedown, so a
+  // click can't collapse it — fatal after Select All). Keep it click-through.
+  '.cm-selectionLayer': { zIndex: '2 !important', pointerEvents: 'none' },
   '.cm-selectionBackground': {
-    backgroundColor: 'rgba(255,159,64,0.45) !important',
+    backgroundColor: 'var(--accent-soft) !important',
   },
 });
 
@@ -849,6 +1067,8 @@ export const LIVE_EDIT_CLASSES = [
   'cm-md-link',
   'cm-md-quote-line',
   'cm-md-fenced-line',
+  'cm-md-block-first',
+  'cm-md-block-last',
   'cm-md-code-copy',
   'cm-md-bullet',
   'cm-md-hr',

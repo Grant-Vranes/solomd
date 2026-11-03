@@ -1,7 +1,13 @@
 import { isTreeSortMode, type TreeSortMode } from '../lib/tree-sort';
+import { cleanFontFamilyFromFilename } from '../lib/custom-font';
 import { defineStore } from 'pinia';
 import type { Theme, ViewMode } from '../types';
-import { isIOS, isMobile } from '../lib/platform';
+import type { WindowsEditorEngine } from '../lib/platform';
+import { isMobile } from '../lib/platform';
+import {
+  QUICK_CAPTURE_DEFAULT_SHORTCUT,
+  migrateQuickCaptureShortcut,
+} from '../lib/quick-capture-shortcut';
 
 const LS_KEY = 'solomd.settings.v1';
 
@@ -17,13 +23,31 @@ export function buildEditorFontStack(face: string): string {
   // If user pasted a full stack already (contains comma), use as-is but still
   // append CJK fallback for safety.
   if (trimmed.includes(',')) return `${trimmed}, ${CJK_FALLBACK}`;
-  const needsQuote = /\s/.test(trimmed) && !/^["']/.test(trimmed);
+  const isFileOrPath = /\.(ttf|otf|woff2|woff|ttc)$/i.test(trimmed) || /[\\/]/.test(trimmed);
+  if (isFileOrPath) {
+    const { stem, family } = cleanFontFamilyFromFilename(trimmed);
+    const names = Array.from(new Set([family, stem].filter(Boolean))).map((n) =>
+      /\s/.test(n) && !/^["']/.test(n) ? `"${n}"` : n,
+    );
+    if (names.length > 0) {
+      return `${names.join(', ')}, ${CJK_FALLBACK}, "JetBrains Mono", Menlo, Consolas, monospace`;
+    }
+  }
+  const needsQuote = /[\s/.\\]/.test(trimmed) && !/^["']/.test(trimmed);
   const quoted = needsQuote ? `"${trimmed}"` : trimmed;
   return `${quoted}, ${CJK_FALLBACK}, "JetBrains Mono", Menlo, Consolas, monospace`;
 }
 
+/** 5.0 default editor face: the "System Sans" preset in Settings (same value,
+ *  so the picker shows it selected) — SF Pro + PingFang on Apple, Segoe UI +
+ *  YaHei on Windows via buildEditorFontStack's CJK tail. */
+export const DEFAULT_EDITOR_FONT = '-apple-system, "Segoe UI", system-ui, sans-serif';
+
 interface Settings {
   theme: Theme;
+  /** D6 — follow the OS light/dark appearance. While on, `theme` holds the
+   *  resolved 'light' | 'dark', so every reader of `theme` keeps working. */
+  followSystemTheme: boolean;
   viewMode: ViewMode;
   // #87(3) — if set, this view mode is forced on every launch, overriding
   // the persisted last-used `viewMode`. `null` (default) keeps the existing
@@ -35,12 +59,25 @@ interface Settings {
   showLineNumbers: boolean;
   // #193 — non-blinking (solid) caret in the editor.
   solidCursor: boolean;
+  // 5.0 — floating format bar over a text selection (desktop only).
+  selectionBubble: boolean;
   // #353 — keep Markdown markers (`#`, `**`, …) visible in the CodeMirror
   // live views instead of hiding them off the caret line, so clicking a line
   // doesn't reflow it. Styling (heading size, bold) still applies.
   alwaysShowMarkers: boolean;
   // #344 — tint the caret line's background in the CodeMirror editor.
   highlightCurrentLine: boolean;
+  /** Use the document's first non-empty line as the tab title instead of the
+   *  on-disk filename (off by default). Useful when a 3rd-party tool opens
+   *  temporary/UUID-named files in SoloMD. */
+  tabTitleFromFirstLine: boolean;
+  /** Before saving an existing file path, check whether the file still exists
+   *  on disk; if missing (e.g. a 3rd-party app cleaned up its temporary file),
+   *  prompt the user to confirm creating a new file at that path (off by default). */
+  confirmSaveMissingFile: boolean;
+  /** #484 — automatically maintain hierarchical 1–6 heading numbers (`1.`, `1.1`, `1.1.1`)
+   *  when headings are added, deleted, or modified (off by default). */
+  autoNumberHeadings: boolean;
   // #190 — dedicated code font (code blocks / inline code / mono UI).
   // Empty = built-in monospace stack.
   codeFontFamily: string;
@@ -80,6 +117,7 @@ interface Settings {
    *  restores all previously-enabled panes in their previous state. */
   rightSidebarHidden: boolean;
   livePreview: boolean;
+  v503SourceModeMigrated?: boolean;
   // Editor super features
   spellCheck: boolean;
   focusMode: boolean;
@@ -94,10 +132,14 @@ interface Settings {
   /** Hint keys already shown — `bold`, `heading`, … Never shown twice. */
   formatHintsSeen: string[];
   vimMode: boolean;
-  /** Windows only: 'native' textarea (IME-safe, default) or 'codemirror'
-   *  (syntax highlighting, non-jumping live edit) — #328, #344. Vim mode
-   *  forces CodeMirror regardless. Ignored on other platforms. */
-  windowsEditorEngine: 'native' | 'codemirror';
+  /** Windows only: 'auto' (default — CodeMirror on WebView2 154+, the
+   *  IME-safe native textarea below that), 'native' or 'codemirror' (#328,
+   *  #344). Vim mode forces CodeMirror regardless. Ignored elsewhere. */
+  windowsEditorEngine: WindowsEditorEngine;
+  /** True once the user picked native/CodeMirror themselves. Before `auto`
+   *  existed every install stored 'native' (the old default), so a stored
+   *  'native' without this flag is not a choice and becomes 'auto'. */
+  windowsEditorEngineExplicit: boolean;
   uiFontSize: number;
   language: 'en' | 'zh' | 'ja' | 'ko' | 'de' | 'fr' | 'es' | 'pt' | 'it' | 'pl' | 'nl' | 'tr' | 'sv' | 'uk' | 'ru';
   autoCheckUpdate: boolean;
@@ -237,6 +279,30 @@ interface Settings {
   // Persisted so Esc / the close-button restores their previous workspace
   // even across reloads. Never set to 'reading' — sentinel only.
   lastNonReadingViewMode: ViewMode;
+  // #459: last view mode the user was in before entering preview mode, so
+  // `view.togglePreview` flips back to their editing mode (`liveEdit`/`edit`/`split`).
+  lastNonPreviewViewMode: ViewMode;
+  // #458: WebDAV workspace sync configuration (Nutstore / Nextcloud / AList / Synology).
+  webdavEnabled: boolean;
+  webdavUrl: string;
+  webdavUsername: string;
+  webdavPassword: string;
+  webdavRemotePath: string;
+  webdavEncrypted: boolean;
+  webdavPassphrase: string;
+  webdavAutoSync: boolean;
+  // Local personal cloud drive encrypted backup & sync directory (百度网盘 / 阿里云盘 / 夸克网盘 / OneDrive / iCloud / 坚果云).
+  cloudVaultDir: string;
+  cloudVaultPassphrase: string;
+  cloudVaultAutoSync: boolean;
+  // Direct Personal Cloud Drive OpenAPI encrypted backup & sync (百度网盘 OpenAPI / 阿里云盘 OpenAPI / OneDrive / Dropbox).
+  cloudApiProvider: 'baidu' | 'alipan' | 'onedrive' | 'dropbox';
+  cloudApiToken: string;
+  cloudApiClientId: string;
+  cloudApiClientSecret: string;
+  cloudApiRemotePath: string;
+  cloudApiPassphrase: string;
+  cloudApiAutoSync: boolean;
   // v2.5 F2: writing stats — show the per-doc word/char goal pill in the
   // status bar. Off-by-default-ish: the pill stays inert unless the doc's
   // YAML front matter sets a `goal:` key, so this toggle is a hard kill
@@ -259,6 +325,7 @@ interface Settings {
   // editor. Default ON — can be turned off for users who don't like
   // the keyboard interception.
   slashCommandsEnabled: boolean;
+  fenceLanguageSuggestions: boolean;
   // v3.6: PNG export — show "Created with SoloMD · solomd.app" footer
   // under the rendered note. Default ON (mild self-promotion is fine
   // for a free MIT app), but explicitly toggleable in Settings → Export
@@ -283,7 +350,7 @@ interface Settings {
   // Quick capture: a system-wide hotkey that opens a small box, takes a line
   // of text and files it in the Inbox without bringing the app forward. The
   // chord is an OS-level accelerator (Tauri's spelling, e.g.
-  // `CmdOrCtrl+Alt+M`), not one of the rebindable in-app shortcuts, because
+  // `CmdOrCtrl+Alt+Shift+M`), not one of the rebindable in-app shortcuts, because
   // it has to work while another application is focused.
   quickCaptureEnabled: boolean;
   quickCaptureShortcut: string;
@@ -291,6 +358,9 @@ interface Settings {
   // academic) a Word export starts from. A per-document `docx:` front-matter
   // block overrides individual keys, the same way `pdf:` does.
   docxPreset: 'plain' | 'report' | 'academic';
+  // #503 — Optional default export directory. When empty, exports default to
+  // the current note's own directory (#260).
+  defaultExportDir: string;
   // Print / system-PDF palette, independent of the app theme. Printing in a
   // dark theme put a dark slab on paper and wasted ink; `light` (the default)
   // always prints on white, `dark` prints the dark palette on purpose, and
@@ -317,6 +387,9 @@ interface Settings {
   // like an IDE's "always select opened file". Default on. It never re-roots
   // the workspace: a file outside it is simply not followed.
   explorerFollowActive: boolean;
+  explorerDoubleClickFiles: boolean;
+  explorerShowFolderCount: boolean;
+  v507HighlightLineMigrated: boolean;
   // Show dot-files / dot-folders in the Explorer tree. Off by default: a
   // vault's `.git`, `.obsidian` and friends are noise for most people. On,
   // they're reachable from inside the app instead of only from Finder.
@@ -325,6 +398,13 @@ interface Settings {
   // so the two panels aren't identical surfaces. Off by default — it changes
   // how the app looks, which is not something to do to everyone in a patch.
   distinctSplitPanes: boolean;
+  // Split view: keep the preview following the editor as you type and scroll
+  // (the default). Off, the two panes are independent — no scroll sync, and
+  // the preview only re-renders from what was last saved to disk.
+  splitLiveSync: boolean;
+  // #367: editor share of the split view, in percent (the preview gets the
+  // rest). Dragging the divider sets it; double-click resets to 50.
+  splitRatio: number;
   // #282: show only these file extensions in the Explorer tree (lower-case,
   // no dot; '' is the no-extension bucket). Empty = show everything. It
   // persists, so the tree carries a permanent banner whenever it is set —
@@ -348,16 +428,39 @@ interface Settings {
   // becomes selectable. Kept separate from the UI `language` setting: people
   // routinely run an English interface while writing Spanish.
   spellcheckLang: string;
+  // LanguageTool grammar / style checking (lib/languagetool.ts). Off by
+  // default: 'local' talks to a server the user runs, 'premium' and 'public'
+  // send text to languagetool.org, which Settings states plainly. The Premium
+  // API key lives in the OS keychain, never here.
+  ltMode: LtMode;
+  ltLocalUrl: string;
+  /** Premium account e-mail (LanguageTool's `username`). */
+  ltUsername: string;
+  /** 'auto' or a LanguageTool code (`de-DE`); a note's front matter `lang:` wins. */
+  ltLanguage: string;
+  ltMotherTongue: string;
+  /** With 'auto': variants to prefer, e.g. `en-GB,de-DE`. */
+  ltPreferredVariants: string;
+  ltLevel: 'default' | 'picky';
+  ltDisabledRules: string[];
+  /** Words the user accepted from a LanguageTool spelling match. */
+  ltUserWords: string[];
+  /** Check the whole note in the background, not just what's on screen. */
+  ltCheckWholeDoc: boolean;
   smartQuotes: boolean;
   /** #180 — per-action shortcut overrides. Only what the user changed is
-   *  stored; a `null` value means they unbound the action entirely. */
-  keybindings: Record<string, string | null>;
+   *  stored; a `null` value means they unbound the action entirely, and a
+   *  list keeps several chords (the Typora / Word preset uses one). */
+  keybindings: Record<string, string | string[] | null>;
   // #251 — `c4ca303` (#216) flipped the *default* to false, but `load()` does
   // `{...defaults(), ...parsed}`, so every install that already had `true`
   // saved kept it. Those users went on seeing U+2019 drawn fullwidth by a CJK
   // font fallback and reported the same "space after the apostrophe" bug
   // again. One-time marker that turns it off once for them.
   smartQuotesOptInMigrated: boolean;
+  /** #347 — one-time: a saved `pdfDefaults.pageSize` of `A4` from before
+   *  `Auto` existed was the untouched default, not a choice. */
+  pdfPageSizeAutoMigrated: boolean;
   // Promote plain numbered-section lines (`6.2 出口许可证管理目录`,
   // `6.2.1 …`) to headings whose level tracks the numbering depth. Off by
   // default — the promotion is heuristic (a line opening with a decimal like
@@ -455,8 +558,13 @@ interface Settings {
 
 /** v2.5 PDF / print export defaults. */
 export interface PdfDefaults {
-  /** Page size preset (`A4` / `A5` / `Letter` / `Legal`) or `Custom`. */
-  pageSize: 'A4' | 'A5' | 'Letter' | 'Legal' | 'Custom';
+  /** Page size preset (`A4` / `A5` / `Letter` / `Legal`) or `Custom`.
+   *  `Auto` (#347, the default) = don't set one; the print dialog decides.
+   *  Before `Auto` existed the default was `A4`, and an untouched `A4` meant
+   *  the same thing — so picking A4 on purpose was indistinguishable from not
+   *  choosing, and TOC page numbers (which need a known page size) could
+   *  never be switched on for A4. */
+  pageSize: 'Auto' | 'A4' | 'A5' | 'Letter' | 'Legal' | 'Custom';
   /** Custom page width in mm — only consulted when `pageSize === 'Custom'`. */
   customWidthMm: number;
   /** Custom page height in mm — only consulted when `pageSize === 'Custom'`. */
@@ -482,7 +590,7 @@ export interface PdfDefaults {
 
 export function defaultPdfDefaults(): PdfDefaults {
   return {
-    pageSize: 'A4',
+    pageSize: 'Auto',
     customWidthMm: 210,
     customHeightMm: 297,
     margin: 'Normal',
@@ -533,15 +641,26 @@ function defaults(): Settings {
     window.matchMedia('(prefers-color-scheme: dark)').matches;
   return {
     theme: prefersDark ? 'dark' : 'light',
-    viewMode: 'edit',
+    // New installs follow the OS; load() keeps it off for a stored blob that
+    // predates the option, so an existing explicit choice is never undone.
+    followSystemTheme: true,
+    // 5.0 (docs/v5-ui-spec.md §5) — new installs open in live edit, in the
+    // system face at 16px, without line numbers. Saved settings are never
+    // rewritten: these only fill keys a stored blob does not have.
+    viewMode: 'liveEdit',
     startupViewMode: null,
-    fontSize: 14,
-    fontFamily: 'JetBrains Mono',
+    fontSize: 16,
+    fontFamily: DEFAULT_EDITOR_FONT,
     wordWrap: true,
-    showLineNumbers: true,
+    showLineNumbers: false,
     solidCursor: false,
+    selectionBubble: true,
     alwaysShowMarkers: false,
-    highlightCurrentLine: false,
+    highlightCurrentLine: true,
+    tabTitleFromFirstLine: false,
+    confirmSaveMissingFile: false,
+    autoNumberHeadings: false,
+    v507HighlightLineMigrated: true,
     codeFontFamily: '',
     showOutline: false,
     outlineSide: 'right',
@@ -557,8 +676,11 @@ function defaults(): Settings {
     // share the narrow width (the doc becomes an unreadable sliver), so the
     // right sidebar starts hidden. The editor + file tree behave as mutually
     // exclusive full-width views (opening a file collapses the tree).
-    rightSidebarHidden: isMobile(),
-    livePreview: true,
+    // 5.0 — writing first: a new install opens on the text alone; the right
+    // sidebar is one click (or ⌘⌥B) away. Saved settings are untouched.
+    rightSidebarHidden: true,
+    livePreview: false,
+    v503SourceModeMigrated: true,
     spellCheck: true,
     focusMode: false,
     toolbarHidden: false,
@@ -566,7 +688,8 @@ function defaults(): Settings {
     formatHints: true,
     formatHintsSeen: [],
     vimMode: false,
-    windowsEditorEngine: 'native',
+    windowsEditorEngine: 'auto',
+    windowsEditorEngineExplicit: false,
     uiFontSize: 13,
     autoCheckUpdate: true,
     language: (() => {
@@ -592,10 +715,10 @@ function defaults(): Settings {
       } catch { return 'en'; }
     })() as 'en' | 'zh' | 'ja' | 'ko' | 'de' | 'fr' | 'es' | 'pt' | 'it' | 'pl' | 'nl' | 'tr' | 'sv' | 'uk' | 'ru',
     previewFitWidth: false,
-    previewMaxWidth: 760,
+    previewMaxWidth: 680,
     plantumlEnabled: false,
     plantumlServer: 'https://www.plantuml.com/plantuml',
-    limitEditorWidth: false,
+    limitEditorWidth: true,
     customCssPath: '',
     telemetryEnabled: true,
     telemetryNoticeAck: false,
@@ -627,7 +750,7 @@ function defaults(): Settings {
     agentAllowWrite: false,
     agentToolLoopCap: 8,
     sideSidebarWidth: 260,
-    fileTreeWidth: 240,
+    fileTreeWidth: 260,
     aiEnabled: false,
     aiProvider: 'openai',
     aiModel: '',
@@ -640,14 +763,30 @@ function defaults(): Settings {
     showInspector: false,
     rightSidebarPaneHeights: {},
     ragEnabled: false,
-    readingByDefaultOnMobile: (() => {
-      try {
-        return isIOS();
-      } catch {
-        return false;
-      }
-    })(),
-    lastNonReadingViewMode: 'edit',
+    // 5.0 — off for new installs: the phone editor screen has its own preview
+    // button, and reading mode's full-screen takeover hid the nav (back to
+    // 笔记, the bottom bar). Saved settings keep the user's choice.
+    readingByDefaultOnMobile: false,
+    lastNonReadingViewMode: 'liveEdit',
+    lastNonPreviewViewMode: 'liveEdit',
+    webdavEnabled: false,
+    webdavUrl: '',
+    webdavUsername: '',
+    webdavPassword: '',
+    webdavRemotePath: '/SoloMD',
+    webdavEncrypted: false,
+    webdavPassphrase: '',
+    webdavAutoSync: false,
+    cloudVaultDir: '',
+    cloudVaultPassphrase: '',
+    cloudVaultAutoSync: false,
+    cloudApiProvider: 'baidu',
+    cloudApiToken: '',
+    cloudApiClientId: '',
+    cloudApiClientSecret: '',
+    cloudApiRemotePath: '/apps/SoloMD',
+    cloudApiPassphrase: '',
+    cloudApiAutoSync: false,
     showWritingStats: true,
     showWorkspaceDailyTotal: false,
     pdfDefaults: defaultPdfDefaults(),
@@ -655,11 +794,12 @@ function defaults(): Settings {
     pomodoroAutoEngageFocus: true,
     pomodoroDefaultMinutes: 25,
     slashCommandsEnabled: true,
+    fenceLanguageSuggestions: true,
     imageExportBranding: true,
     globalZoom: 1,
     wheelZoomEnabled: true,
     quickCaptureEnabled: true,
-    quickCaptureShortcut: 'CmdOrCtrl+Alt+M',
+    quickCaptureShortcut: QUICK_CAPTURE_DEFAULT_SHORTCUT,
     docxPreset: 'plain',
     printTheme: 'light',
     foldingEnabled: true,
@@ -667,20 +807,36 @@ function defaults(): Settings {
     codeBlockWrap: false,
     explorerFullNames: false,
     explorerDoubleClickFolders: false,
+    explorerDoubleClickFiles: false,
+    explorerShowFolderCount: true,
     explorerFollowActive: true,
     explorerShowHidden: false,
     explorerExtFilter: [] as string[],
     explorerSortByFolder: {} as Record<string, TreeSortMode>,
     distinctSplitPanes: false,
+    splitLiveSync: true,
+    splitRatio: 50,
     markdownHardBreaks: true,
     spellcheckLang: 'en_US',
+    ltMode: 'off',
+    ltLocalUrl: 'http://localhost:8081',
+    ltUsername: '',
+    ltLanguage: 'auto',
+    ltMotherTongue: '',
+    ltPreferredVariants: '',
+    ltLevel: 'default',
+    ltDisabledRules: [],
+    ltUserWords: [],
+    ltCheckWholeDoc: false,
     smartQuotes: false,
     keybindings: {},
     smartQuotesOptInMigrated: true,
+    pdfPageSizeAutoMigrated: true,
     markdownAutoNumberHeadings: false,
     rsPaneOrder: ['search', 'outline', 'backlinks', 'relationships', 'tags', 'tasks', 'neighborhood', 'types', 'history', 'inspector', 'agent'],
-    previewFontSize: 15,
+    previewFontSize: 16,
     attachmentMode: 'shared',
+    defaultExportDir: '',
     assetsDirName: '_assets',
     attachmentCustomPath: './images/${filename}/',
     imageUploader: 'none',
@@ -722,7 +878,7 @@ function mergePdfDefaults(saved: unknown): PdfDefaults {
     const v = typeof n === 'number' && Number.isFinite(n) ? n : fallback;
     return Math.max(min, Math.min(max, v));
   };
-  const okPageSize = ['A4', 'A5', 'Letter', 'Legal', 'Custom'] as const;
+  const okPageSize = ['Auto', 'A4', 'A5', 'Letter', 'Legal', 'Custom'] as const;
   const okMargin = ['Narrow', 'Normal', 'Wide', 'Custom'] as const;
   const okCodeTheme = ['preview', 'light', 'dark'] as const;
   return {
@@ -742,6 +898,25 @@ function mergePdfDefaults(saved: unknown): PdfDefaults {
   };
 }
 
+/** #367 — keep either side of the split at least a fifth of the width. */
+export const SPLIT_RATIO_MIN = 20;
+export const SPLIT_RATIO_MAX = 80;
+export function clampSplitRatio(n: unknown): number {
+  const v = typeof n === 'number' && Number.isFinite(n) ? n : 50;
+  return Math.round(Math.max(SPLIT_RATIO_MIN, Math.min(SPLIT_RATIO_MAX, v)) * 10) / 10;
+}
+
+export type LtMode = 'off' | 'local' | 'premium' | 'public';
+export const LT_MODES: readonly LtMode[] = ['off', 'local', 'premium', 'public'];
+
+/** Keep only the strings of a saved list (tampered / older blobs). */
+function stringList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
+}
+
+/** Fired after any LanguageTool setting changes, so open editors re-check. */
+export const LT_SETTINGS_CHANGED_EVENT = 'solomd:languagetool-settings-changed';
+
 function load(): Settings {
   try {
     const raw = localStorage.getItem(LS_KEY);
@@ -754,17 +929,36 @@ function load(): Settings {
       merged.pdfDefaults = mergePdfDefaults(parsed.pdfDefaults);
       // #180 — keybindings is a free-form map, so a tampered or older blob
       // could put anything here; keep only string/null values.
-      if (merged.windowsEditorEngine !== 'codemirror') merged.windowsEditorEngine = 'native';
+      // 'codemirror' was always a choice; 'native' only counts as one when the
+      // user picked it after 'auto' existed; anything else follows WebView2.
+      if (merged.windowsEditorEngine === 'native' && parsed.windowsEditorEngineExplicit === true) {
+        merged.windowsEditorEngineExplicit = true;
+      } else if (merged.windowsEditorEngine !== 'codemirror') {
+        merged.windowsEditorEngine = 'auto';
+        merged.windowsEditorEngineExplicit = false;
+      }
       merged.explorerSortByFolder = {};
       if (parsed.explorerSortByFolder && typeof parsed.explorerSortByFolder === 'object') {
         for (const [k, v] of Object.entries(parsed.explorerSortByFolder)) {
           if (isTreeSortMode(v)) merged.explorerSortByFolder[k] = v;
         }
       }
+      merged.splitRatio = clampSplitRatio(merged.splitRatio);
+      if (!LT_MODES.includes(merged.ltMode)) merged.ltMode = 'off';
+      if (merged.ltLevel !== 'picky') merged.ltLevel = 'default';
+      merged.ltDisabledRules = stringList(parsed.ltDisabledRules);
+      merged.ltUserWords = stringList(parsed.ltUserWords);
+      // The old default Ctrl+Alt+M was also the formula editor's chord, and
+      // the global registration always won. Users who never changed it move to
+      // the new default; a chord someone picked is theirs to keep.
+      merged.quickCaptureShortcut = migrateQuickCaptureShortcut(parsed.quickCaptureShortcut);
       merged.keybindings = {};
       if (parsed.keybindings && typeof parsed.keybindings === 'object') {
         for (const [k, v] of Object.entries(parsed.keybindings)) {
           if (v === null || typeof v === 'string') merged.keybindings[k] = v;
+          else if (Array.isArray(v) && v.length && v.every((c) => typeof c === 'string')) {
+            merged.keybindings[k] = v as string[];
+          }
         }
       }
       // One-time v4.0 upgrade: any saved settings blob written before
@@ -790,6 +984,15 @@ function load(): Settings {
       // default change. Clear it once. Anyone who genuinely wants typographic
       // quotes can switch it back on and that choice sticks, because the
       // marker is written here regardless.
+      // #347 — an old saved `A4` becomes `Auto`. Behaviour is identical: an
+      // untouched A4 applied no page setup, and when another PDF field was
+      // changed, Auto resolves to A4 exactly as A4 did.
+      if (!parsed.pdfPageSizeAutoMigrated) {
+        if (merged.pdfDefaults.pageSize === 'A4') {
+          merged.pdfDefaults = { ...merged.pdfDefaults, pageSize: 'Auto' };
+        }
+        merged.pdfPageSizeAutoMigrated = true;
+      }
       if (!parsed.smartQuotesOptInMigrated) {
         merged.smartQuotes = false;
         merged.smartQuotesOptInMigrated = true;
@@ -811,14 +1014,60 @@ function load(): Settings {
         if (isMobile()) merged.rightSidebarHidden = true;
         merged.v491MobileLayoutMigrated = true;
       }
+      if (!parsed.v503SourceModeMigrated) {
+        merged.livePreview = false;
+        merged.v503SourceModeMigrated = true;
+      }
+      if (!parsed.v507HighlightLineMigrated) {
+        merged.highlightCurrentLine = true;
+        merged.v507HighlightLineMigrated = true;
+      }
+      // D6 — a theme outside the built-in list (e.g. a hand-edited or
+      // MCP-written 'system') rendered as a bare white page; reset it to the
+      // default, and treat a literal 'system' as the follow-OS option.
+      if (typeof parsed.followSystemTheme !== 'boolean') merged.followSystemTheme = false;
+      if ((parsed.theme as string) === 'system') merged.followSystemTheme = true;
+      if (!isTheme(merged.theme)) merged.theme = systemTheme();
+      if (merged.followSystemTheme) merged.theme = systemTheme();
       return merged;
     }
   } catch {}
   return defaults();
 }
 
+const THEMES: readonly Theme[] = [
+  'light', 'dark', 'nord', 'solarized-light', 'solarized-dark', 'monokai', 'github-light', 'dracula',
+];
+export function isTheme(v: unknown): v is Theme {
+  return typeof v === 'string' && (THEMES as readonly string[]).includes(v);
+}
+function systemTheme(): Theme {
+  const dark =
+    typeof window !== 'undefined' &&
+    !!window.matchMedia &&
+    window.matchMedia('(prefers-color-scheme: dark)').matches;
+  return dark ? 'dark' : 'light';
+}
+
+// D6 — live-follow the OS appearance switch while "System" is selected.
+let systemThemeListening = false;
+function listenSystemTheme() {
+  if (systemThemeListening || typeof window === 'undefined' || !window.matchMedia) return;
+  systemThemeListening = true;
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    const s = useSettingsStore();
+    if (s.followSystemTheme && s.theme !== systemTheme()) {
+      s.theme = systemTheme();
+      s.persist();
+    }
+  });
+}
+
 export const useSettingsStore = defineStore('settings', {
-  state: (): Settings => load(),
+  state: (): Settings => {
+    listenSystemTheme();
+    return load();
+  },
   actions: {
     persist() {
       try {
@@ -829,8 +1078,19 @@ export const useSettingsStore = defineStore('settings', {
         localStorage.setItem(LS_KEY, JSON.stringify(rest));
       } catch {}
     },
-    setTheme(theme: Theme) {
-      this.theme = theme;
+    /** 'system' follows the OS appearance; anything not a built-in theme is
+     *  ignored (it used to be stored as-is and render a bare page). */
+    setTheme(theme: Theme | 'system') {
+      if (theme === 'system') {
+        this.followSystemTheme = true;
+        this.theme = systemTheme();
+      } else if (isTheme(theme)) {
+        this.followSystemTheme = false;
+        this.theme = theme;
+      } else {
+        console.warn('[settings] ignoring unknown theme', theme);
+        return;
+      }
       this.persist();
     },
     toggleTheme() {
@@ -847,6 +1107,9 @@ export const useSettingsStore = defineStore('settings', {
         this.lastNonReadingViewMode = mode;
       } else if (mode !== 'reading') {
         this.lastNonReadingViewMode = mode;
+      }
+      if (mode !== 'preview' && mode !== 'reading') {
+        this.lastNonPreviewViewMode = mode;
       }
       this.viewMode = mode;
       this.persist();
@@ -865,6 +1128,22 @@ export const useSettingsStore = defineStore('settings', {
      *  From any other view (split, preview, reading) it lands in live edit. */
     toggleLiveEditSource() {
       this.setViewMode(this.viewMode === 'liveEdit' ? 'edit' : 'liveEdit');
+    },
+    /** #459 - Toggle Preview mode on/off, restoring the previous editing mode. */
+    togglePreviewMode() {
+      if (this.viewMode === 'preview') {
+        const next =
+          this.lastNonPreviewViewMode === 'preview' || this.lastNonPreviewViewMode === 'reading'
+            ? 'liveEdit'
+            : this.lastNonPreviewViewMode;
+        this.setViewMode(next);
+      } else {
+        if (this.viewMode !== 'reading') {
+          this.lastNonPreviewViewMode = this.viewMode;
+        }
+        this.viewMode = 'preview';
+        this.persist();
+      }
     },
     /**
      * Toggle reading mode on/off. If the user is currently in reading mode
@@ -930,12 +1209,28 @@ export const useSettingsStore = defineStore('settings', {
       this.solidCursor = !this.solidCursor;
       this.persist();
     },
+    toggleSelectionBubble() {
+      this.selectionBubble = !this.selectionBubble;
+      this.persist();
+    },
     toggleAlwaysShowMarkers() {
       this.alwaysShowMarkers = !this.alwaysShowMarkers;
       this.persist();
     },
     toggleHighlightCurrentLine() {
       this.highlightCurrentLine = !this.highlightCurrentLine;
+      this.persist();
+    },
+    toggleTabTitleFromFirstLine() {
+      this.tabTitleFromFirstLine = !this.tabTitleFromFirstLine;
+      this.persist();
+    },
+    toggleConfirmSaveMissingFile() {
+      this.confirmSaveMissingFile = !this.confirmSaveMissingFile;
+      this.persist();
+    },
+    toggleAutoNumberHeadings() {
+      this.autoNumberHeadings = !this.autoNumberHeadings;
       this.persist();
     },
     setCodeFontFamily(f: string) {
@@ -957,7 +1252,7 @@ export const useSettingsStore = defineStore('settings', {
     /** #180 — `combo` sets an override, `null` unbinds, `undefined` restores
      *  the default (we delete the key so future default changes reach the
      *  user instead of being pinned to whatever shipped today). */
-    setKeybinding(actionId: string, combo: string | null | undefined) {
+    setKeybinding(actionId: string, combo: string | string[] | null | undefined) {
       if (combo === undefined) delete this.keybindings[actionId];
       else this.keybindings[actionId] = combo;
       this.persist();
@@ -1057,8 +1352,12 @@ export const useSettingsStore = defineStore('settings', {
       }
     },
     toggleLivePreview() {
-      this.livePreview = !this.livePreview;
-      this.persist();
+      if (this.viewMode === 'split') {
+        this.livePreview = !this.livePreview;
+        this.persist();
+        return;
+      }
+      this.setViewMode(this.viewMode === 'liveEdit' ? 'edit' : 'liveEdit');
     },
     toggleSpellCheck() {
       this.spellCheck = !this.spellCheck;
@@ -1088,8 +1387,10 @@ export const useSettingsStore = defineStore('settings', {
       this.vimMode = !this.vimMode;
       this.persist();
     },
-    setWindowsEditorEngine(engine: 'native' | 'codemirror') {
-      this.windowsEditorEngine = engine === 'codemirror' ? 'codemirror' : 'native';
+    setWindowsEditorEngine(engine: WindowsEditorEngine) {
+      this.windowsEditorEngine =
+        engine === 'codemirror' || engine === 'native' ? engine : 'auto';
+      this.windowsEditorEngineExplicit = this.windowsEditorEngine !== 'auto';
       this.persist();
     },
     toggleAutoCheckUpdate() {
@@ -1202,7 +1503,7 @@ export const useSettingsStore = defineStore('settings', {
     setFileTreeWidth(w: number) {
       // Reasonable bounds — narrower than 180 hides text, wider than 600
       // eats too much editor space.
-      const clean = Math.max(180, Math.min(600, Math.round(w) || 240));
+      const clean = Math.max(180, Math.min(600, Math.round(w) || 260));
       this.fileTreeWidth = clean;
       this.persist();
     },
@@ -1269,9 +1570,24 @@ export const useSettingsStore = defineStore('settings', {
       this.rightSidebarPaneHeights = { ...this.rightSidebarPaneHeights, [paneId]: clean };
       this.persist();
     },
-    clearRightSidebarPaneHeights() {
+    /** Double-click on one splitter: even out the pane heights only. */
+    resetRightSidebarPaneHeights() {
       this.rightSidebarPaneHeights = {};
       this.persist();
+    },
+    /** E3 — "Reset sidebar layout": pane heights, pane order and the sidebar
+     *  width all go back to their defaults (it used to reset heights only,
+     *  leaving a reordered, 400 px sidebar looking un-reset). */
+    resetRightSidebarLayout() {
+      const d = defaults();
+      this.rightSidebarPaneHeights = {};
+      this.rsPaneOrder = [...d.rsPaneOrder];
+      this.sideSidebarWidth = d.sideSidebarWidth;
+      this.persist();
+    },
+    /** The view.resetSidebarPanes command's entry point (useCommands.ts). */
+    clearRightSidebarPaneHeights() {
+      this.resetRightSidebarLayout();
     },
     setAutoGitDebounceSeconds(n: number) {
       this.autoGitDebounceSeconds = Math.max(5, Math.min(600, Math.round(n) || 30));
@@ -1339,6 +1655,10 @@ export const useSettingsStore = defineStore('settings', {
       this.slashCommandsEnabled = !this.slashCommandsEnabled;
       this.persist();
     },
+    toggleFenceLanguageSuggestions() {
+      this.fenceLanguageSuggestions = !this.fenceLanguageSuggestions;
+      this.persist();
+    },
     toggleImageExportBranding() {
       this.imageExportBranding = !this.imageExportBranding;
       this.persist();
@@ -1401,6 +1721,14 @@ export const useSettingsStore = defineStore('settings', {
       this.explorerDoubleClickFolders = !this.explorerDoubleClickFolders;
       this.persist();
     },
+    toggleExplorerDoubleClickFiles() {
+      this.explorerDoubleClickFiles = !this.explorerDoubleClickFiles;
+      this.persist();
+    },
+    toggleExplorerShowFolderCount() {
+      this.explorerShowFolderCount = !this.explorerShowFolderCount;
+      this.persist();
+    },
     toggleExplorerFollowActive() {
       this.explorerFollowActive = !this.explorerFollowActive;
       this.persist();
@@ -1427,6 +1755,14 @@ export const useSettingsStore = defineStore('settings', {
       this.explorerSortByFolder = next;
       this.persist();
     },
+    toggleSplitLiveSync() {
+      this.splitLiveSync = !this.splitLiveSync;
+      this.persist();
+    },
+    setSplitRatio(n: number) {
+      this.splitRatio = clampSplitRatio(n);
+      this.persist();
+    },
     toggleDistinctSplitPanes() {
       this.distinctSplitPanes = !this.distinctSplitPanes;
       this.persist();
@@ -1438,6 +1774,25 @@ export const useSettingsStore = defineStore('settings', {
     setSpellcheckLang(code: string) {
       this.spellcheckLang = code || 'en_US';
       this.persist();
+    },
+    /** Patch any LanguageTool setting(s); open editors re-check. */
+    setLanguageTool(patch: Partial<Pick<Settings,
+      'ltMode' | 'ltLocalUrl' | 'ltUsername' | 'ltLanguage' | 'ltMotherTongue'
+      | 'ltPreferredVariants' | 'ltLevel' | 'ltDisabledRules' | 'ltUserWords' | 'ltCheckWholeDoc'>>) {
+      Object.assign(this, patch);
+      this.persist();
+      try {
+        window.dispatchEvent(new CustomEvent(LT_SETTINGS_CHANGED_EVENT));
+      } catch {}
+    },
+    ltDisableRule(ruleId: string) {
+      if (!ruleId || this.ltDisabledRules.includes(ruleId)) return;
+      this.setLanguageTool({ ltDisabledRules: [...this.ltDisabledRules, ruleId] });
+    },
+    ltAddUserWord(word: string) {
+      const w = word.trim();
+      if (!w || this.ltUserWords.includes(w)) return;
+      this.setLanguageTool({ ltUserWords: [...this.ltUserWords, w] });
     },
     toggleSmartQuotes() {
       this.smartQuotes = !this.smartQuotes;
@@ -1461,23 +1816,29 @@ export const useSettingsStore = defineStore('settings', {
       this.persist();
     },
     resetRsPaneOrder() {
-      this.rsPaneOrder = ['search', 'outline', 'backlinks', 'relationships', 'tags', 'tasks', 'neighborhood', 'types', 'history', 'inspector', 'agent'];
+      this.rsPaneOrder = [...defaults().rsPaneOrder];
       this.persist();
     },
     /** v4.3.0 PR #74 — preview-only font size. Editor font is the existing
      *  `setFontSize`; this one drives `--content-font-size` (Preview.vue). */
     setPreviewFontSize(n: number) {
-      this.previewFontSize = Math.max(10, Math.min(32, Math.round(n || 15)));
+      this.previewFontSize = Math.max(10, Math.min(32, Math.round(n || defaults().previewFontSize)));
       this.persist();
     },
-    previewFontIn() { this.setPreviewFontSize((this.previewFontSize || 15) + 1); },
-    previewFontOut() { this.setPreviewFontSize((this.previewFontSize || 15) - 1); },
-    resetPreviewFontSize() { this.setPreviewFontSize(15); },
+    // The fallbacks and the reset read defaults(): literals here went stale
+    // when 5.0 moved both sizes to 16 (regression run F-9).
+    previewFontIn() { this.setPreviewFontSize((this.previewFontSize || defaults().previewFontSize) + 1); },
+    previewFontOut() { this.setPreviewFontSize((this.previewFontSize || defaults().previewFontSize) - 1); },
+    resetPreviewFontSize() { this.setPreviewFontSize(defaults().previewFontSize); },
     /** v4.3.5 — flip between `shared` (`_assets/`) and `per-file`
      *  (`<basename>.assets/`) attachment storage layouts. */
     setAttachmentMode(mode: 'shared' | 'per-file' | 'custom') {
       this.attachmentMode =
         mode === 'per-file' ? 'per-file' : mode === 'custom' ? 'custom' : 'shared';
+      this.persist();
+    },
+    setDefaultExportDir(dir: string) {
+      this.defaultExportDir = (dir || '').trim();
       this.persist();
     },
     // #7 — Typora-style custom path template (used when attachmentMode==='custom').
@@ -1540,9 +1901,9 @@ export const useSettingsStore = defineStore('settings', {
     },
     /** v4.3.0 PR #74 — editor-only font size convenience wrappers. The
      *  underlying field is the existing `fontSize`. */
-    editorFontIn() { this.setFontSize((this.fontSize || 14) + 1); },
-    editorFontOut() { this.setFontSize((this.fontSize || 14) - 1); },
-    resetEditorFontSize() { this.setFontSize(14); },
+    editorFontIn() { this.setFontSize((this.fontSize || defaults().fontSize) + 1); },
+    editorFontOut() { this.setFontSize((this.fontSize || defaults().fontSize) - 1); },
+    resetEditorFontSize() { this.setFontSize(defaults().fontSize); },
     // v4.6 F6 — Inbox workflow toggles.
     toggleInboxWorkflow() {
       this.inboxWorkflowEnabled = !this.inboxWorkflowEnabled;

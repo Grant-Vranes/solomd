@@ -10,14 +10,20 @@
 // html2pdf.js bundles html2canvas; we import it directly for image-only use.
 // @ts-ignore — no types
 import { initMermaid } from './mermaid-lazy';
+import { sanitizeModernColors } from './export-colors';
 import { renderMarkdown, extractImageRoot } from './markdown';
-import { rewriteImageUrls } from './image-resolve';
+import { loadRenderDeps } from './render-deps';
+import { inlineLocalImages, rewriteImageUrls } from './image-resolve';
 
 export interface ImageExportOptions {
   /** When true, append a "Created with SoloMD · solomd.app" footer.
    *  Default true (mirroring the settings store default); pass false
    *  to opt out per-call. */
   branding?: boolean;
+  /** #454 — render code block line numbers when enabled. */
+  codeBlockLineNumbers?: boolean;
+  /** #454 — soft-wrap long lines inside fenced code blocks when enabled. */
+  codeBlockWrap?: boolean;
 }
 
 const IMAGE_CSS = `
@@ -68,6 +74,44 @@ const IMAGE_CSS = `
     border: 1px solid #e6e2d8;
   }
   .img-page pre code { background: transparent; padding: 0; color: #1f1d1a; }
+  .img-page.cb-wrap-on pre {
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    overflow-x: visible;
+  }
+  .img-page.cb-numbered-on pre.cb-numbered {
+    counter-reset: cb-line;
+    padding-left: 0;
+  }
+  .img-page.cb-numbered-on pre.cb-numbered code {
+    display: block;
+    white-space: normal;
+  }
+  .img-page.cb-numbered-on pre.cb-numbered code .cb-line {
+    counter-increment: cb-line;
+    display: block;
+    padding-left: 3.4em;
+    position: relative;
+    white-space: pre;
+  }
+  .img-page.cb-wrap-on.cb-numbered-on pre.cb-numbered code .cb-line {
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+  .img-page.cb-numbered-on pre.cb-numbered code .cb-line::before {
+    content: counter(cb-line);
+    position: absolute;
+    left: 0;
+    width: 2.6em;
+    padding-right: 0.6em;
+    text-align: right;
+    color: #8a857c;
+    border-right: 1px solid #e6e2d8;
+    user-select: none;
+    -webkit-user-select: none;
+  }
   .img-page blockquote {
     border-left: 4px solid #ff9f40; margin: 1.3em 0; padding: .5em 1.1em;
     color: #6a6560; font-style: italic; background: #fff7ec;
@@ -75,14 +119,15 @@ const IMAGE_CSS = `
   }
   .img-page ul, .img-page ol { padding-left: 1.8em; margin: .9em 0; }
   .img-page table { border-collapse: collapse; margin: 1.3em 0; width: 100%; font-size: .95em; }
-  .img-page th, .img-page td { border: 1px solid #e6e2d8; padding: 7px 13px; text-align: left; }
+  /* #370 — long unbreakable runs break inside the cell, not past the card. */
+  .img-page th, .img-page td { border: 1px solid #e6e2d8; padding: 7px 13px; text-align: left; overflow-wrap: anywhere; word-break: break-word; }
   .img-page .cell-nowrap { white-space: nowrap; }
   .img-page thead th { background: #ffe7cc; font-weight: 700; border-bottom: 2px solid #ff9f40; }
   .img-page hr { border: none; border-top: 1px solid #e6e2d8; margin: 2em 0; }
   .img-page img { max-width: 100%; border-radius: 6px; margin: 1em 0; }
   .img-page .mermaid-block { display: flex; justify-content: center; margin: 1.5em 0; }
   .img-page .mermaid-block svg { max-width: 100%; height: auto; }
-  .img-page .katex-display { overflow-x: auto; margin: 1em 0; }
+  .img-page .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.5em 0; margin: 0.5em 0; }
 
   /* Watermark / branding — rendered when settings.imageExportBranding
      is on (default ON in v3.6). Toggleable in Settings → Export so
@@ -122,8 +167,12 @@ async function processMermaidBlocks(container: HTMLElement) {
       wrap.className = 'mermaid-block';
       wrap.innerHTML = svg;
       pre.replaceWith(wrap);
-    } catch {
-      // silently skip broken mermaid
+    } catch (e) {
+      // Say why where the diagram would have been, like Preview does.
+      const err = document.createElement('pre');
+      err.className = 'mermaid-error';
+      err.textContent = `Mermaid error: ${(e as Error).message}`;
+      pre.replaceWith(err);
     }
   }
 }
@@ -134,8 +183,11 @@ export async function markdownToImageBlob(
   filePath?: string,
   opts: ImageExportOptions = {},
 ): Promise<Blob> {
+  await loadRenderDeps(); // rendered once — no placeholder math / plain code
   const rawHtml = renderMarkdown(source || '');
-  const html = rewriteImageUrls(rawHtml, extractImageRoot(source || ''), filePath);
+  const imageRoot = extractImageRoot(source || '');
+  const withLocalImages = await inlineLocalImages(rawHtml, imageRoot, filePath);
+  const html = rewriteImageUrls(withLocalImages, imageRoot, filePath);
 
   const styleEl = document.createElement('style');
   styleEl.textContent = IMAGE_CSS;
@@ -147,7 +199,14 @@ export async function markdownToImageBlob(
   root.style.zIndex = '-1';
 
   const page = document.createElement('article');
-  page.className = opts.branding ? 'img-page img-page--branded' : 'img-page';
+  page.className = [
+    'img-page',
+    opts.branding ? 'img-page--branded' : '',
+    opts.codeBlockLineNumbers ? 'cb-numbered-on' : '',
+    opts.codeBlockWrap ? 'cb-wrap-on' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
   page.innerHTML = html;
 
   // Branded footer default ON — settings.imageExportBranding controls
@@ -168,6 +227,9 @@ export async function markdownToImageBlob(
   try {
     await processMermaidBlocks(page);
     await new Promise((r) => setTimeout(r, 60));
+    // html2canvas throws on color()/oklch()/color-mix() computed colors —
+    // same guard as the raster PDF (export-colors.ts).
+    sanitizeModernColors(page);
 
     // Let html2canvas auto-size to the element's natural bounding box.
     // v3.6 originally passed explicit width/height/windowWidth/windowHeight

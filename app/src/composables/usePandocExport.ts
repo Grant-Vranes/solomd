@@ -20,12 +20,14 @@ import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { useTabsStore } from '../stores/tabs';
 import { useToastsStore } from '../stores/toasts';
+import { useI18n } from '../i18n';
 // NOTE: the parent must add `workspaceBibliography: string` and
 // `workspaceCsl: string` fields (defaults `''`) to `stores/settings.ts`
 // before this file's exportTo / loadCitations will pick them up. We import
 // the existing store so the shape can be augmented later without changing
 // imports here.
 import { useSettingsStore } from '../stores/settings';
+import { exportDefaultPath } from '../lib/export-paths';
 import { track } from '../lib/telemetry';
 import {
   parseBibFile,
@@ -122,6 +124,7 @@ function detectCitationFormat(path: string): 'bib' | 'csl-json' {
 export function usePandocExport() {
   const tabs = useTabsStore();
   const toasts = useToastsStore();
+  const { t } = useI18n();
   const settings = useSettingsStore();
 
   async function detectPandoc(): Promise<PandocInfo | null> {
@@ -134,10 +137,10 @@ export function usePandocExport() {
     }
   }
 
-  function activeContext(): { content: string; baseName: string } | null {
+  function activeContext(): { content: string; baseName: string; filePath: string | null } | null {
     const tab = tabs.activeTab;
     if (!tab) {
-      toasts.error('No active document');
+      toasts.error(t('toast.noActiveDoc'));
       return null;
     }
     const name = (tab as { fileName?: string; title?: string }).fileName
@@ -146,6 +149,7 @@ export function usePandocExport() {
     return {
       content: tab.content ?? '',
       baseName: name.replace(/\.[^.]+$/, ''),
+      filePath: tab.filePath ?? null,
     };
   }
 
@@ -229,8 +233,9 @@ export function usePandocExport() {
       ext === '*'
         ? [{ name: 'All Files', extensions: ['*'] }]
         : [{ name: filterName, extensions: [ext] }];
+    const filename = `${ctx.baseName}.${ext === '*' ? 'out' : ext}`;
     const outputPath = await saveDialog({
-      defaultPath: `${ctx.baseName}.${ext === '*' ? 'out' : ext}`,
+      defaultPath: exportDefaultPath(ctx.filePath, filename, settings.defaultExportDir) ?? filename,
       filters,
     });
     if (!outputPath) return;
@@ -238,7 +243,7 @@ export function usePandocExport() {
     const { bibliography, csl } = resolveCitationFlags(content);
 
     track('file_exported', { format: `pandoc_${format}` });
-    const tid = toasts.info(`Exporting via Pandoc (${format})…`, 0);
+    const tid = toasts.info(t('toast.pandocExporting', { format }), 0);
     try {
       await invoke('pandoc_export', {
         args: {
@@ -252,11 +257,11 @@ export function usePandocExport() {
         },
       });
       toasts.dismiss(tid);
-      toasts.success(`Exported to ${format.toUpperCase()}`);
+      toasts.success(t('toast.exportedTo', { format: format.toUpperCase() }));
     } catch (e) {
       toasts.dismiss(tid);
       const msg = typeof e === 'string' ? e : (e as Error)?.message || String(e);
-      toasts.error(`Pandoc export failed: ${msg}`);
+      toasts.error(t('toast.pandocFailed', { error: msg }));
     }
   }
 

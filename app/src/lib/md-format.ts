@@ -11,10 +11,15 @@
  * the format comes off. That is what makes one shortcut enough.
  */
 
+import { enclosingListContentIndent } from './list-continuation';
+import { applyChanges, mapPos, renumberChanges } from './list-renumber';
+
 export type FormatKind =
   | 'bold'
   | 'italic'
+  | 'underline'
   | 'strike'
+  | 'highlight'
   | 'code'
   | 'link'
   | 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'
@@ -25,7 +30,7 @@ export type FormatKind =
   | 'codeblock';
 
 export const FORMAT_KINDS: FormatKind[] = [
-  'bold', 'italic', 'strike', 'code', 'link',
+  'bold', 'italic', 'underline', 'strike', 'highlight', 'code', 'link',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'quote', 'ul', 'ol', 'task', 'codeblock',
 ];
@@ -85,8 +90,51 @@ function toggleStars(doc: string, from: number, to: number, width: 1 | 2): Forma
   if (has) {
     return { from: s - width, to: e + width, insert: inner, selFrom: s - width, selTo: e - width };
   }
+  // A bare caret inside an existing span the word rule cannot see — CJK,
+  // where the "word" is empty (这是**粗|体**文字), or a Latin span of several
+  // words — takes that span's markers off instead of nesting a new pair.
+  if (from === to) {
+    const span = enclosingStarSpan(doc, from, width);
+    if (span) {
+      const [openEnd, closeStart] = span;
+      return {
+        from: openEnd - width,
+        to: closeStart + width,
+        insert: doc.slice(openEnd, closeStart),
+        selFrom: from - width,
+        selTo: from - width,
+      };
+    }
+  }
   const m = '*'.repeat(width);
   return { from: s, to: e, insert: m + inner + m, selFrom: s + width, selTo: e + width };
+}
+
+/**
+ * The `**…**` (width 2) or `*…*` (width 1) span on the caret's line that
+ * contains `pos`, as [end of the opening run, start of the closing run].
+ * Runs pair up left to right — the second run of a kind closes the first —
+ * so a caret *between* two spans is in neither. A run of 3 counts for both.
+ */
+function enclosingStarSpan(doc: string, pos: number, width: 1 | 2): [number, number] | null {
+  const ls = pos > 0 ? doc.lastIndexOf('\n', pos - 1) + 1 : 0;
+  let le = doc.indexOf('\n', pos);
+  if (le < 0) le = doc.length;
+  const runs: [number, number][] = [];
+  for (let i = ls; i < le; ) {
+    if (doc[i] !== '*') { i++; continue; }
+    let j = i;
+    while (j < le && doc[j] === '*') j++;
+    const n = j - i;
+    if (width === 2 ? n >= 2 : n % 2 === 1) runs.push([i, j]);
+    i = j;
+  }
+  for (let k = 0; k + 1 < runs.length; k += 2) {
+    const openEnd = runs[k][1];
+    const closeStart = runs[k + 1][0];
+    if (closeStart > openEnd && pos >= openEnd && pos <= closeStart) return [openEnd, closeStart];
+  }
+  return null;
 }
 
 function toggleWrap(doc: string, from: number, to: number, marker: string): FormatEdit {
@@ -100,7 +148,108 @@ function toggleWrap(doc: string, from: number, to: number, marker: string): Form
   if (doc.slice(s - w, s) === marker && doc.slice(e, e + w) === marker) {
     return { from: s - w, to: e + w, insert: inner, selFrom: s - w, selTo: e - w };
   }
+  if (from === to && w >= 2) {
+    const ls = from > 0 ? doc.lastIndexOf('\n', from - 1) + 1 : 0;
+    let le = doc.indexOf('\n', from);
+    if (le < 0) le = doc.length;
+    const line = doc.slice(ls, le);
+    let idx = 0;
+    while (idx < line.length) {
+      const o = line.indexOf(marker, idx);
+      if (o < 0) break;
+      const c = line.indexOf(marker, o + w);
+      if (c < 0) break;
+      const openEnd = ls + o + w;
+      const closeStart = ls + c;
+      if (closeStart > openEnd && from >= openEnd && from <= closeStart) {
+        return {
+          from: ls + o,
+          to: closeStart + w,
+          insert: doc.slice(openEnd, closeStart),
+          selFrom: from - w,
+          selTo: from - w,
+        };
+      }
+      idx = c + w;
+    }
+  }
   return { from: s, to: e, insert: marker + inner + marker, selFrom: s + w, selTo: e + w };
+}
+
+function toggleTagWrap(doc: string, from: number, to: number, openTag: string, closeTag: string): FormatEdit {
+  let [s, e] = targetRange(doc, from, to);
+  const ow = openTag.length;
+  const cw = closeTag.length;
+  if (
+    e - s >= ow + cw &&
+    doc.slice(s, s + ow).toLowerCase() === openTag &&
+    doc.slice(e - cw, e).toLowerCase() === closeTag
+  ) {
+    s += ow;
+    e -= cw;
+  }
+  const inner = doc.slice(s, e);
+  if (
+    s >= ow &&
+    doc.slice(s - ow, s).toLowerCase() === openTag &&
+    doc.slice(e, e + cw).toLowerCase() === closeTag
+  ) {
+    return { from: s - ow, to: e + cw, insert: inner, selFrom: s - ow, selTo: e - ow };
+  }
+  if (from === to) {
+    const ls = from > 0 ? doc.lastIndexOf('\n', from - 1) + 1 : 0;
+    let le = doc.indexOf('\n', from);
+    if (le < 0) le = doc.length;
+    const lineLower = doc.slice(ls, le).toLowerCase();
+    let idx = 0;
+    while (idx < lineLower.length) {
+      const o = lineLower.indexOf(openTag, idx);
+      if (o < 0) break;
+      const c = lineLower.indexOf(closeTag, o + ow);
+      if (c < 0) break;
+      const openEnd = ls + o + ow;
+      const closeStart = ls + c;
+      if (from >= openEnd && from <= closeStart) {
+        return {
+          from: ls + o,
+          to: closeStart + cw,
+          insert: doc.slice(openEnd, closeStart),
+          selFrom: from - ow,
+          selTo: from - ow,
+        };
+      }
+      idx = c + cw;
+    }
+  }
+  return { from: s, to: e, insert: openTag + inner + closeTag, selFrom: s + ow, selTo: e + ow };
+}
+
+function toggleTagLines(doc: string, from: number, to: number, openTag: string, closeTag: string): FormatEdit {
+  const ow = openTag.length;
+  const cw = closeTag.length;
+  const segs = doc.slice(from, to).split('\n');
+  const atLineStart = from === 0 || doc[from - 1] === '\n';
+  const parts = segs.map((seg, i) => {
+    const lineStart = i > 0 || atLineStart;
+    const pre = lineStart ? seg.match(LINE_PREFIX)?.[0] ?? '' : '';
+    const rest = seg.slice(pre.length);
+    const core = rest.replace(/\s+$/, '');
+    return { pre, core, post: rest.slice(core.length) };
+  });
+  const has = (c: string) =>
+    c.length >= ow + cw &&
+    c.slice(0, ow).toLowerCase() === openTag &&
+    c.slice(c.length - cw).toLowerCase() === closeTag;
+  const filled = parts.filter((p) => p.core);
+  const remove = filled.length > 0 && filled.every((p) => has(p.core));
+  const insert = parts
+    .map(({ pre, core, post }) => {
+      if (!core) return pre + post;
+      if (remove) return pre + core.slice(ow, core.length - cw) + post;
+      return pre + (has(core) ? core : openTag + core + closeTag) + post;
+    })
+    .join('\n');
+  return { from, to, insert, selFrom: from, selTo: from + insert.length };
 }
 
 function makeLink(doc: string, from: number, to: number): FormatEdit {
@@ -119,7 +268,11 @@ function makeLink(doc: string, from: number, to: number): FormatEdit {
 
 /** The whole lines the selection touches. */
 function lineSpan(doc: string, from: number, to: number): [number, number] {
-  const s = doc.lastIndexOf('\n', from - 1) + 1;
+  // #360 — `lastIndexOf('\n', -1)` searches from index 0, not "nowhere": with
+  // the caret at offset 0 of a document that starts with an empty line it
+  // found that newline, so the span became [1, 0] and the edit was rejected —
+  // Ctrl+1 on an empty first line did nothing.
+  const s = from > 0 ? doc.lastIndexOf('\n', from - 1) + 1 : 0;
   // A selection ending right after a newline does not include the next line.
   const endAnchor = to > from && doc[to - 1] === '\n' ? to - 1 : to;
   let e = doc.indexOf('\n', endAnchor);
@@ -129,10 +282,37 @@ function lineSpan(doc: string, from: number, to: number): [number, number] {
 
 const HEADING = /^(\s{0,3})#{1,6}\s+/;
 const QUOTE = /^(\s*)>\s?/;
+const QUOTE_PREFIX = /^((?:[ \t]*>[ \t]?)*)/;
 const TASK = /^(\s*)(?:[-*+]|\d+[.)])\s+\[[ xX]\]\s+/;
 const UL = /^(\s*)[-*+]\s+(?!\[[ xX]\]\s)/;
 const OL = /^(\s*)\d+[.)]\s+(?!\[[ xX]\]\s)/;
 const ANY_LIST = /^(\s*)(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/;
+const FENCE_LINE = /^[ \t]{0,3}(`{3,}|~{3,})/;
+const THEMATIC_BREAK_LINE = /^[ \t]{0,3}(?:[-*_][ \t]*){3,}$/;
+const TABLE_ROW_LINE = /^[ \t]*\|.*\|[ \t]*$/;
+const MATH_OR_HTML_LINE =
+  /^[ \t]*(?:\$\$|\\\[|<\/?(?:address|article|aside|blockquote|details|dialog|div|dl|dt|dd|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|iframe|li|main|nav|ol|p|pre|section|summary|table|tbody|td|tfoot|th|thead|tr|ul)\b|<!--)/i;
+
+function normalizeQuotePrefix(q: string): string {
+  if (!q) return '';
+  return q.endsWith('>') ? `${q} ` : q;
+}
+
+function indentWidth(ws: string): number {
+  let w = 0;
+  for (const ch of ws) w += ch === '\t' ? 4 - (w % 4) : 1;
+  return w;
+}
+
+function isBlockStopLine(rest: string): boolean {
+  return (
+    FENCE_LINE.test(rest) ||
+    HEADING.test(rest) ||
+    THEMATIC_BREAK_LINE.test(rest) ||
+    TABLE_ROW_LINE.test(rest) ||
+    MATH_OR_HTML_LINE.test(rest)
+  );
+}
 
 function mapLines(
   doc: string,
@@ -168,24 +348,354 @@ function togglePrefix(
   test: RegExp,
   make: (indent: string, rest: string, index: number) => string,
   strip: RegExp,
+  preserveQuote = false,
 ): FormatEdit {
   return mapLines(doc, from, to, (lines) => {
-    const live = lines.filter((l) => l.trim() !== '');
-    const already = live.length > 0 && live.every((l) => test.test(l));
+    const stripQuote = (l: string) => {
+      if (!preserveQuote) return { qRaw: '', qNorm: '', rest: l };
+      const qRaw = QUOTE_PREFIX.exec(l)![1];
+      return { qRaw, qNorm: normalizeQuotePrefix(qRaw), rest: l.slice(qRaw.length) };
+    };
+    const isBlankLine = (l: string) => {
+      if (l.trim() === '') return true;
+      if (preserveQuote && lines.length > 1 && stripQuote(l).rest.trim() === '') return true;
+      return false;
+    };
+    const live = lines.filter((l) => !isBlankLine(l));
+    const already = live.length > 0 && live.every((l) => test.test(stripQuote(l).rest));
     let i = 0;
     return lines.map((l) => {
-      if (l.trim() === '' && lines.length > 1) return l;
-      if (already) return l.replace(test, '$1');
+      if (isBlankLine(l) && lines.length > 1) return l;
+      const { qRaw, qNorm, rest: lineRest } = stripQuote(l);
+      if (already) return qRaw + lineRest.replace(test, '$1');
       // Switching list type replaces the old marker rather than stacking
-      // "1. - item".
-      const indent = /^\s*/.exec(l)![0];
-      const rest = l.replace(strip, '').replace(/^\s*/, '');
-      return make(indent, rest, i++);
+      // "1. - item", and inside a blockquote places the list marker after `> ` (#513).
+      const indent = /^[ \t]*/.exec(lineRest)![0];
+      const rest = lineRest.replace(strip, '').replace(/^\s*/, '');
+      return qNorm + make(indent, rest, i++);
     });
   });
 }
 
+function withListRenumber(doc: string, base: FormatEdit): FormatEdit {
+  const next = doc.slice(0, base.from) + base.insert + doc.slice(base.to);
+  const renum = renumberChanges(next, base.from, base.from + base.insert.length, {
+    forceConsecutive: true,
+    resetFirstToOne: true,
+  });
+  if (!renum.length) return base;
+  const final = applyChanges(next, renum);
+  const selFrom = mapPos(base.selFrom, renum);
+  const selTo = mapPos(base.selTo, renum);
+  let p = 0;
+  while (p < doc.length && p < final.length && doc[p] === final[p]) p++;
+  let q = 0;
+  while (
+    q < doc.length - p &&
+    q < final.length - p &&
+    doc[doc.length - 1 - q] === final[final.length - 1 - q]
+  ) {
+    q++;
+  }
+  return { from: p, to: doc.length - q, insert: final.slice(p, final.length - q), selFrom, selTo };
+}
+
+/**
+ * When converting a single line (bare caret or single-line selection) to an
+ * unordered list (`ul`), convert the entire contiguous list group (when the
+ * line is an ordered/task item) or the entire contiguous block of plain lines
+ * not separated by blank lines.
+ */
+function toggleUnorderedList(doc: string, from: number, to: number): FormatEdit {
+  const [s, e] = lineSpan(doc, from, to);
+  const singleLine = !doc.slice(s, e).includes('\n');
+  if (singleLine && !enclosingFence(doc, from, to)) {
+    const lines = linesOf(doc);
+    const curIdx = lines.findIndex((l) => l.start === s);
+    if (curIdx >= 0) {
+      const quoteRe = /^((?:[ \t]*>[ \t]?)*)/;
+      const splitLine = (text: string) => {
+        const q = quoteRe.exec(text)![1];
+        const qDepth = (q.match(/>/g) ?? []).length;
+        const rest = text.slice(q.length);
+        const ind = /^[ \t]*/.exec(rest)![0];
+        return { q, qDepth, rest, ind, indW: indentWidth(ind), blank: rest.trim() === '' };
+      };
+      const cur = splitLine(lines[curIdx].text);
+      if (!cur.blank && !isBlockStopLine(cur.rest)) {
+        // 1. Contiguous block of plain/UL lines (at the same quote depth) with at least one plain line
+        if (!ANY_LIST.test(cur.rest) || UL.test(cur.rest)) {
+          const isPlainOrUl = (i: number): boolean => {
+            if (enclosingFence(doc, lines[i].start, lines[i].end)) return false;
+            const info = splitLine(lines[i].text);
+            if (info.blank || info.qDepth !== cur.qDepth || isBlockStopLine(info.rest)) return false;
+            if (info.indW !== cur.indW) return false;
+            if (ANY_LIST.test(info.rest) && !UL.test(info.rest)) return false;
+            return true;
+          };
+          let first = curIdx;
+          let last = curIdx;
+          while (first > 0 && isPlainOrUl(first - 1)) first--;
+          while (last + 1 < lines.length && isPlainOrUl(last + 1)) last++;
+          let hasPlain = false;
+          for (let i = first; i <= last; i++) {
+            if (!UL.test(splitLine(lines[i].text).rest)) {
+              hasPlain = true;
+              break;
+            }
+          }
+          if (first < last && hasPlain) {
+            const rewritten = lines.slice(first, last + 1).map((l) => {
+              const info = splitLine(l.text);
+              const body = info.rest.replace(ANY_LIST, '').replace(/^[ \t]*/, '');
+              return `${normalizeQuotePrefix(info.q)}${info.ind}- ${body}`;
+            });
+            const spanStart = lines[first].start;
+            const spanEnd = lines[last].end;
+            const insert = rewritten.join('\n');
+            let caretEnd = spanStart;
+            for (let i = first; i <= curIdx; i++) {
+              caretEnd += rewritten[i - first].length + (i < curIdx ? 1 : 0);
+            }
+            const base: FormatEdit =
+              from === to
+                ? { from: spanStart, to: spanEnd, insert, selFrom: caretEnd, selTo: caretEnd }
+                : { from: spanStart, to: spanEnd, insert, selFrom: spanStart, selTo: spanStart + insert.length };
+            return withListRenumber(doc, base);
+          }
+        }
+        // 2. Contiguous list group that contains ordered/task items
+        if (ANY_LIST.test(cur.rest)) {
+          const siblings = new Set<number>([curIdx]);
+          let first = curIdx;
+          let last = curIdx;
+          for (let i = curIdx - 1; i >= 0; i--) {
+            if (enclosingFence(doc, lines[i].start, lines[i].end)) break;
+            const info = splitLine(lines[i].text);
+            if (info.blank || info.qDepth !== cur.qDepth || isBlockStopLine(info.rest)) break;
+            if (info.indW < cur.indW) break;
+            if (info.indW > cur.indW) continue;
+            if (ANY_LIST.test(info.rest)) {
+              siblings.add(i);
+              first = i;
+            } else {
+              break;
+            }
+          }
+          for (let i = curIdx + 1; i < lines.length; i++) {
+            if (enclosingFence(doc, lines[i].start, lines[i].end)) break;
+            const info = splitLine(lines[i].text);
+            if (info.blank || info.qDepth !== cur.qDepth || isBlockStopLine(info.rest)) break;
+            if (info.indW < cur.indW) break;
+            if (info.indW > cur.indW) continue;
+            if (ANY_LIST.test(info.rest)) {
+              siblings.add(i);
+              last = i;
+            } else {
+              break;
+            }
+          }
+          const hasNonUl = Array.from(siblings).some((i) => !UL.test(splitLine(lines[i].text).rest));
+          if (siblings.size > 1 && (!UL.test(cur.rest) || hasNonUl)) {
+            const rewritten = lines.slice(first, last + 1).map((l, idx) => {
+              const lineIdx = first + idx;
+              if (!siblings.has(lineIdx)) return l.text;
+              const info = splitLine(l.text);
+              const body = info.rest.replace(ANY_LIST, '').replace(/^[ \t]*/, '');
+              return `${normalizeQuotePrefix(info.q)}${info.ind}- ${body}`;
+            });
+            const spanStart = lines[first].start;
+            const spanEnd = lines[last].end;
+            const insert = rewritten.join('\n');
+            let caretEnd = spanStart;
+            for (let i = first; i <= curIdx; i++) {
+              caretEnd += rewritten[i - first].length + (i < curIdx ? 1 : 0);
+            }
+            const base: FormatEdit =
+              from === to
+                ? { from: spanStart, to: spanEnd, insert, selFrom: caretEnd, selTo: caretEnd }
+                : { from: spanStart, to: spanEnd, insert, selFrom: spanStart, selTo: spanStart + insert.length };
+            return withListRenumber(doc, base);
+          }
+        }
+      }
+    }
+  }
+  const base = togglePrefix(doc, from, to, UL, (ind, rest) => `${ind}- ${rest}`, ANY_LIST, true);
+  return withListRenumber(doc, base);
+}
+
+/**
+ * When converting a single line (bare caret or single-line selection) to an
+ * ordered list (`ol`), convert the entire contiguous list group (when the
+ * line is an unordered/task item) or the entire contiguous block of plain
+ * lines not separated by blank lines, and number them consecutively.
+ */
+function toggleOrderedList(doc: string, from: number, to: number): FormatEdit {
+  const [s, e] = lineSpan(doc, from, to);
+  const singleLine = !doc.slice(s, e).includes('\n');
+  if (singleLine && !enclosingFence(doc, from, to)) {
+    const lines = linesOf(doc);
+    const curIdx = lines.findIndex((l) => l.start === s);
+    if (curIdx >= 0) {
+      const quoteRe = /^((?:[ \t]*>[ \t]?)*)/;
+      const splitLine = (text: string) => {
+        const q = quoteRe.exec(text)![1];
+        const qDepth = (q.match(/>/g) ?? []).length;
+        const rest = text.slice(q.length);
+        const ind = /^[ \t]*/.exec(rest)![0];
+        return { q, qDepth, rest, ind, indW: indentWidth(ind), blank: rest.trim() === '' };
+      };
+      const cur = splitLine(lines[curIdx].text);
+      if (!cur.blank && !isBlockStopLine(cur.rest)) {
+        // First check if `cur` is part of a contiguous block of plain/OL lines
+        // (at the same quote depth) that has at least one plain line to convert.
+        if (!ANY_LIST.test(cur.rest) || OL.test(cur.rest)) {
+          const isPlainOrOl = (i: number): boolean => {
+            if (enclosingFence(doc, lines[i].start, lines[i].end)) return false;
+            const info = splitLine(lines[i].text);
+            if (info.blank || info.qDepth !== cur.qDepth || isBlockStopLine(info.rest)) return false;
+            if (info.indW !== cur.indW) return false;
+            if (ANY_LIST.test(info.rest) && !OL.test(info.rest)) return false;
+            return true;
+          };
+          let first = curIdx;
+          let last = curIdx;
+          while (first > 0 && isPlainOrOl(first - 1)) first--;
+          while (last + 1 < lines.length && isPlainOrOl(last + 1)) last++;
+          let hasPlain = false;
+          for (let i = first; i <= last; i++) {
+            if (!OL.test(splitLine(lines[i].text).rest)) {
+              hasPlain = true;
+              break;
+            }
+          }
+          if (first < last && hasPlain) {
+            const rewritten = lines.slice(first, last + 1).map((l, idx) => {
+              const info = splitLine(l.text);
+              const body = info.rest.replace(ANY_LIST, '').replace(/^[ \t]*/, '');
+              return `${normalizeQuotePrefix(info.q)}${info.ind}${idx + 1}. ${body}`;
+            });
+            const spanStart = lines[first].start;
+            const spanEnd = lines[last].end;
+            const insert = rewritten.join('\n');
+            let caretEnd = spanStart;
+            for (let i = first; i <= curIdx; i++) {
+              caretEnd += rewritten[i - first].length + (i < curIdx ? 1 : 0);
+            }
+            const base: FormatEdit =
+              from === to
+                ? { from: spanStart, to: spanEnd, insert, selFrom: caretEnd, selTo: caretEnd }
+                : { from: spanStart, to: spanEnd, insert, selFrom: spanStart, selTo: spanStart + insert.length };
+            return withListRenumber(doc, base);
+          }
+        }
+        // Next check if `cur` is a list item in a contiguous list group that
+        // contains unordered/task items (or needs renumbering).
+        if (ANY_LIST.test(cur.rest)) {
+          const siblings = new Set<number>([curIdx]);
+          let first = curIdx;
+          let last = curIdx;
+          for (let i = curIdx - 1; i >= 0; i--) {
+            if (enclosingFence(doc, lines[i].start, lines[i].end)) break;
+            const info = splitLine(lines[i].text);
+            if (info.blank || info.qDepth !== cur.qDepth || isBlockStopLine(info.rest)) break;
+            if (info.indW < cur.indW) break;
+            if (info.indW > cur.indW) continue;
+            if (ANY_LIST.test(info.rest)) {
+              siblings.add(i);
+              first = i;
+            } else {
+              break;
+            }
+          }
+          for (let i = curIdx + 1; i < lines.length; i++) {
+            if (enclosingFence(doc, lines[i].start, lines[i].end)) break;
+            const info = splitLine(lines[i].text);
+            if (info.blank || info.qDepth !== cur.qDepth || isBlockStopLine(info.rest)) break;
+            if (info.indW < cur.indW) break;
+            if (info.indW > cur.indW) continue;
+            if (ANY_LIST.test(info.rest)) {
+              siblings.add(i);
+              last = i;
+            } else {
+              break;
+            }
+          }
+          const hasNonOl = Array.from(siblings).some((i) => !OL.test(splitLine(lines[i].text).rest));
+          if (siblings.size > 1 && (!OL.test(cur.rest) || hasNonOl)) {
+            let num = 1;
+            const rewritten = lines.slice(first, last + 1).map((l, idx) => {
+              const lineIdx = first + idx;
+              if (!siblings.has(lineIdx)) return l.text;
+              const info = splitLine(l.text);
+              const body = info.rest.replace(ANY_LIST, '').replace(/^[ \t]*/, '');
+              return `${normalizeQuotePrefix(info.q)}${info.ind}${num++}. ${body}`;
+            });
+            const spanStart = lines[first].start;
+            const spanEnd = lines[last].end;
+            const insert = rewritten.join('\n');
+            let caretEnd = spanStart;
+            for (let i = first; i <= curIdx; i++) {
+              caretEnd += rewritten[i - first].length + (i < curIdx ? 1 : 0);
+            }
+            const base: FormatEdit =
+              from === to
+                ? { from: spanStart, to: spanEnd, insert, selFrom: caretEnd, selTo: caretEnd }
+                : { from: spanStart, to: spanEnd, insert, selFrom: spanStart, selTo: spanStart + insert.length };
+            return withListRenumber(doc, base);
+          }
+        }
+      }
+    }
+  }
+  const base = togglePrefix(doc, from, to, OL, (ind, rest, i) => `${ind}${i + 1}. ${rest}`, ANY_LIST, true);
+  return withListRenumber(doc, base);
+}
+
+/**
+ * The closed fenced block (``` or ~~~) whose lines contain [from, to], as
+ * offsets: opening line start, inner start, inner end, closing line end.
+ * Fences are tracked from the top of the document, so a ``` line is known to
+ * open or close.
+ */
+function enclosingFence(doc: string, from: number, to: number): [number, number, number, number] | null {
+  let open: { start: number; end: number; ch: string; len: number } | null = null;
+  let at = 0;
+  while (at <= doc.length) {
+    let end = doc.indexOf('\n', at);
+    if (end < 0) end = doc.length;
+    const line = doc.slice(at, end);
+    const m = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+    if (m) {
+      if (!open) {
+        if (m[1][0] === '~' || !m[2].includes('`')) open = { start: at, end, ch: m[1][0], len: m[1].length };
+      } else if (m[1][0] === open.ch && m[1].length >= open.len && m[2].trim() === '') {
+        if (from >= open.start && to <= end) {
+          const innerStart = Math.min(open.end + 1, at);
+          return [open.start, innerStart, Math.max(innerStart, at - 1), end];
+        }
+        open = null;
+      }
+    }
+    if (open === null && at > to) return null;
+    at = end + 1;
+  }
+  return null;
+}
+
 function toggleCodeBlock(doc: string, from: number, to: number): FormatEdit {
+  // Inside a block — the caret on either fence line too, which is where the
+  // wrap below leaves it — the command takes the fences off.
+  const fence = enclosingFence(doc, from, to);
+  if (fence) {
+    const [blockStart, innerStart, innerEnd, blockEnd] = fence;
+    const inner = doc.slice(innerStart, innerEnd);
+    const map = (p: number) => Math.max(blockStart, Math.min(blockStart + inner.length, p - (innerStart - blockStart)));
+    return from === to
+      ? { from: blockStart, to: blockEnd, insert: inner, selFrom: map(from), selTo: map(from) }
+      : { from: blockStart, to: blockEnd, insert: inner, selFrom: blockStart, selTo: blockStart + inner.length };
+  }
   const [s, e] = lineSpan(doc, from, to);
   const body = doc.slice(s, e);
   const lines = body.split('\n');
@@ -193,31 +703,289 @@ function toggleCodeBlock(doc: string, from: number, to: number): FormatEdit {
     const inner = lines.slice(1, -1).join('\n');
     return { from: s, to: e, insert: inner, selFrom: s, selTo: s + inner.length };
   }
-  const insert = '```\n' + body + '\n```';
-  // Caret after the opening fence: the language is the next thing to type.
-  return { from: s, to: e, insert, selFrom: s + 3, selTo: s + 3 };
+  let indent = /^[ \t]*/.exec(lines[0])![0];
+  const listIndent = enclosingListContentIndent(doc, s);
+  if (listIndent && (indent.length > 0 || body.trim() === '') && indent.length < listIndent.length) {
+    indent = listIndent;
+  }
+  const indentedBody =
+    indent.length === 0
+      ? body
+      : body.trim() === ''
+        ? indent
+        : lines
+            .map((l) => (l.trim() === '' ? indent : l.startsWith(indent) ? l : indent + l.replace(/^[ \t]*/, '')))
+            .join('\n');
+  const insert = `${indent}\`\`\`\n${indentedBody}\n${indent}\`\`\``;
+  // Caret on the code-block body line so the user can start typing code immediately.
+  const caretPos = s + indent.length + 4 + indentedBody.length;
+  return { from: s, to: e, insert, selFrom: caretPos, selTo: caretPos };
+}
+
+const INLINE_MARKERS: Partial<Record<FormatKind, string>> = {
+  bold: '**',
+  italic: '*',
+  strike: '~~',
+  highlight: '==',
+  code: '`',
+};
+// What a line may start with that is structure, not content: indent, quote
+// markers, then a heading, bullet, number or task box.
+const LINE_PREFIX = /^[ \t]*(?:>[ \t]?)*(?:#{1,6}[ \t]+|(?:[-*+]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)?/;
+
+/**
+ * Bold / italic / strike / code over a selection spanning lines. Emphasis
+ * cannot cross a line break in Markdown, so one pair around the whole range
+ * renders as literal asterisks — each line's content is wrapped on its own,
+ * as Typora does. Blank lines and line prefixes (`- `, `## `, `> `) stay
+ * outside the markers. Still a toggle: when every line already has the
+ * format it comes off all of them.
+ */
+function toggleInlineLines(doc: string, from: number, to: number, marker: string): FormatEdit {
+  const w = marker.length;
+  const segs = doc.slice(from, to).split('\n');
+  const atLineStart = from === 0 || doc[from - 1] === '\n';
+  const parts = segs.map((seg, i) => {
+    const lineStart = i > 0 || atLineStart;
+    const pre = lineStart ? seg.match(LINE_PREFIX)?.[0] ?? '' : '';
+    const rest = seg.slice(pre.length);
+    const core = rest.replace(/\s+$/, '');
+    return { pre, core, post: rest.slice(core.length) };
+  });
+  const has = (c: string) =>
+    c.length >= 2 * w && c.startsWith(marker) && c.endsWith(marker) &&
+    // `**x**` is bold, not italic: a single-star check must not match a double.
+    (w !== 1 || !(c.startsWith('**') && c.endsWith('**')) || (c.startsWith('***') && c.endsWith('***')));
+  const filled = parts.filter((p) => p.core);
+  const remove = filled.length > 0 && filled.every((p) => has(p.core));
+  const insert = parts
+    .map(({ pre, core, post }) => {
+      if (!core) return pre + post;
+      if (remove) return pre + core.slice(w, core.length - w) + post;
+      return pre + (has(core) ? core : marker + core + marker) + post;
+    })
+    .join('\n');
+  return { from, to, insert, selFrom: from, selTo: from + insert.length };
 }
 
 /** The edit that applies (or removes) `kind` at the given selection. */
 export function applyFormat(doc: string, from: number, to: number, kind: FormatKind): FormatEdit {
   const a = Math.max(0, Math.min(from, to, doc.length));
   const b = Math.max(0, Math.min(Math.max(from, to), doc.length));
+  const inline = INLINE_MARKERS[kind];
+  if (inline && doc.slice(a, b).includes('\n')) return toggleInlineLines(doc, a, b, inline);
+  if (kind === 'underline' && doc.slice(a, b).includes('\n')) return toggleTagLines(doc, a, b, '<u>', '</u>');
   switch (kind) {
     case 'bold': return toggleStars(doc, a, b, 2);
     case 'italic': return toggleStars(doc, a, b, 1);
+    case 'underline': return toggleTagWrap(doc, a, b, '<u>', '</u>');
     case 'strike': return toggleWrap(doc, a, b, '~~');
+    case 'highlight': return toggleWrap(doc, a, b, '==');
     case 'code': return toggleWrap(doc, a, b, '`');
     case 'link': return makeLink(doc, a, b);
     case 'quote':
       return togglePrefix(doc, a, b, QUOTE, (ind, rest) => `${ind}> ${rest}`, /^(\s*)(?=\S)/);
     case 'ul':
-      return togglePrefix(doc, a, b, UL, (ind, rest) => `${ind}- ${rest}`, ANY_LIST);
+      return toggleUnorderedList(doc, a, b);
     case 'ol':
-      return togglePrefix(doc, a, b, OL, (ind, rest, i) => `${ind}${i + 1}. ${rest}`, ANY_LIST);
+      return toggleOrderedList(doc, a, b);
     case 'task':
-      return togglePrefix(doc, a, b, TASK, (ind, rest) => `${ind}- [ ] ${rest}`, ANY_LIST);
+      return withListRenumber(doc, togglePrefix(doc, a, b, TASK, (ind, rest) => `${ind}- [ ] ${rest}`, ANY_LIST, true));
     case 'codeblock': return toggleCodeBlock(doc, a, b);
     default:
       return toggleHeading(doc, a, b, Number(kind.slice(1)));
   }
+}
+
+// ---- Tab / Shift+Tab on list items ----
+
+/** indent, marker (`-`, `2.`, `10)`), the spaces after it. */
+const LIST_ITEM = /^( *)([-*+]|\d{1,9}[.)])( +|$)/;
+const ORDERED_NUM = /^( *)(\d{1,9})([.)])/;
+
+interface DocLine {
+  start: number;
+  end: number;
+  text: string;
+}
+
+function linesOf(doc: string): DocLine[] {
+  const out: DocLine[] = [];
+  let at = 0;
+  for (;;) {
+    const nl = doc.indexOf('\n', at);
+    const end = nl < 0 ? doc.length : nl;
+    out.push({ start: at, end, text: doc.slice(at, end) });
+    if (nl < 0) return out;
+    at = nl + 1;
+  }
+}
+
+const leadingSpaces = (t: string) => /^ */.exec(t)![0].length;
+
+/**
+ * Tab / Shift+Tab with the caret (or selection) on list items: nest the
+ * items under the one above, or lift them back out — or null when the first
+ * line is not a list item (or there is nothing to nest under), so the editor
+ * indents as it always did.
+ *
+ * Markdown only nests an item indented to its parent's *content* column:
+ * two spaces under `- `, but three under `2. ` and four under `10. `. A flat
+ * two-space indent under a number is a lazy continuation line, so Tab on
+ * "2. two" turned it into a second line of "1. one" (5.0 regression run,
+ * F-7). Ordered numbers follow on both levels: the nested item starts a new
+ * list at 1 (or continues the one it joins) and the outer list closes the
+ * gap; Shift+Tab does the reverse.
+ */
+export function listIndentEdit(doc: string, from: number, to: number, outdent: boolean): FormatEdit | null {
+  const lines = linesOf(doc);
+  const a = Math.max(0, Math.min(from, to, doc.length));
+  const b = Math.max(0, Math.min(Math.max(from, to), doc.length));
+  const first = lines.findIndex((l) => a <= l.end);
+  let last = lines.findIndex((l) => b <= l.end);
+  // A selection ending right after a newline does not include the next line.
+  if (b > a && last > first && b === lines[last].start) last--;
+  const head = LIST_ITEM.exec(lines[first].text);
+  if (!head || /^[ ]*\t/.test(lines[first].text)) {
+    // Allow Tab / Shift+Tab on the opening fence line (or empty body line) of a
+    // fenced code block under a list item to indent/outdent the entire fenced
+    // block to the list item's content column.
+    const fence = enclosingFence(doc, a, b);
+    const fenceFirst = fence ? lines.findIndex((l) => l.start === fence[0]) : -1;
+    if (
+      !fence ||
+      fenceFirst < 0 ||
+      (first !== fenceFirst && !(a === b && lines[first].start === fence[1] && lines[first].text.trim() === ''))
+    ) {
+      return null;
+    }
+    const fenceLast = lines.findIndex((l) => fence[3] <= l.end);
+    if (fenceLast < fenceFirst) return null;
+    const fenceInd = leadingSpaces(lines[fenceFirst].text);
+    const listIndent = enclosingListContentIndent(doc, lines[fenceFirst].start);
+    if (!listIndent) return null;
+    const wantInd = outdent ? 0 : listIndent.length;
+    const fDelta = wantInd - fenceInd;
+    if (fDelta === 0 || (!outdent && fDelta < 0) || (outdent && fDelta > 0)) return null;
+    const movedFence = lines.slice(fenceFirst, fenceLast + 1).map((l) => {
+      if (fDelta > 0) {
+        if (l.text.trim() === '') return ' '.repeat(wantInd);
+        return ' '.repeat(fDelta) + l.text;
+      }
+      return l.text.slice(Math.min(leadingSpaces(l.text), -fDelta));
+    });
+    const fSpanStart = lines[fenceFirst].start;
+    const fSpanEnd = lines[fenceLast].end;
+    const fInsert = movedFence.join('\n');
+    const linesBeforeCaret = first - fenceFirst + 1;
+    const shiftPos = (p: number) => Math.max(fSpanStart, p + fDelta * linesBeforeCaret);
+    return {
+      from: fSpanStart,
+      to: fSpanEnd,
+      insert: fInsert,
+      selFrom: shiftPos(a),
+      selTo: shiftPos(b),
+    };
+  }
+  const indent = head[1].length;
+
+  // Tab nests under the nearest item above at the same indent; Shift+Tab
+  // lifts out to the nearest item above at a smaller one.
+  let target = -1;
+  let parent = -1;
+  for (let i = first - 1; i >= 0; i--) {
+    const t = lines[i].text;
+    if (t.trim() === '') continue;
+    const m = LIST_ITEM.exec(t);
+    const ind = leadingSpaces(t);
+    if (!outdent && m && ind === indent) {
+      target = indent + m[2].length + Math.max(1, m[3].length);
+      parent = i;
+      break;
+    }
+    if (outdent && m && ind < indent) {
+      target = ind;
+      parent = i;
+      break;
+    }
+    // Shallower text ends the list; so does same-level text that is no item.
+    if (ind < indent || (!outdent && ind === indent && !m)) break;
+  }
+  if (target < 0) return null;
+  const delta = target - indent;
+
+  // Every touched line moves by the same amount, so a selected sub-list
+  // keeps its shape.
+  const touched = lines.slice(first, last + 1).map((l) => {
+    if (l.text.trim() === '') return l.text;
+    if (delta > 0) return ' '.repeat(delta) + l.text;
+    return l.text.slice(Math.min(leadingSpaces(l.text), -delta));
+  });
+
+  // The moved item's number at its new level: one past the sibling it now
+  // follows, or 1 when it starts a list there.
+  const num = ORDERED_NUM.exec(touched[0]);
+  if (num) {
+    let want = 1;
+    if (outdent) {
+      const pm = ORDERED_NUM.exec(lines[parent].text);
+      if (pm) want = Number(pm[2]) + 1;
+    } else {
+      for (let i = first - 1; i > parent; i--) {
+        const t = lines[i].text;
+        if (t.trim() === '') continue;
+        const ind = leadingSpaces(t);
+        if (ind < target) break;
+        const sm = ORDERED_NUM.exec(t);
+        if (ind === target && sm) {
+          want = Number(sm[2]) + 1;
+          break;
+        }
+      }
+    }
+    touched[0] = num[1] + want + num[3] + touched[0].slice(num[0].length);
+  }
+
+  const spanStart = lines[first].start;
+  const body = touched.join('\n');
+  let next = doc.slice(0, spanStart) + body + doc.slice(lines[last].end);
+  const spanEnd = spanStart + body.length;
+
+  // Lifting an item out of a nested list leaves the items after it as a list
+  // of their own under it, which starts at 1 again.
+  let renumberTo = spanEnd;
+  if (outdent) {
+    const after = linesOf(next).find((l) => l.start > spanEnd && l.text.trim() !== '');
+    const am = after && ORDERED_NUM.exec(after.text);
+    if (after && am && am[1].length === indent && am[2] !== '1') {
+      const numFrom = after.start + am[1].length;
+      next = next.slice(0, numFrom) + '1' + next.slice(numFrom + am[2].length);
+      renumberTo = after.end - (am[2].length - 1);
+    }
+  }
+  const renum = renumberChanges(next, spanStart, renumberTo);
+  const final = applyChanges(next, renum);
+
+  // The selection keeps its place in the text of each line.
+  const map = (p: number) => {
+    let lineStart = spanStart;
+    for (let i = first; i <= last; i++) {
+      const grow = touched[i - first].length - lines[i].text.length;
+      if (p <= lines[i].end) return lineStart + Math.max(0, p - lines[i].start + grow);
+      lineStart += touched[i - first].length + 1;
+    }
+    return p;
+  };
+  const after = (p: number) => {
+    for (const c of renum) if (c.to <= p) p += c.insert.length - (c.to - c.from);
+    return p;
+  };
+  const selFrom = after(map(a));
+  const selTo = after(map(b));
+  // One edit over the part that changed, so every editor applies it the same way.
+  let p = 0;
+  while (p < doc.length && p < final.length && doc[p] === final[p]) p++;
+  let q = 0;
+  while (q < doc.length - p && q < final.length - p && doc[doc.length - 1 - q] === final[final.length - 1 - q]) q++;
+  return { from: p, to: doc.length - q, insert: final.slice(p, final.length - q), selFrom, selTo };
 }

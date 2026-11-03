@@ -45,6 +45,14 @@ echo "==> SoloMD v${VERSION} — local Mac build with file-icon injection"
 echo "==> Installing frontend deps"
 pnpm install --frozen-lockfile
 
+echo "==> Building a matching universal MCP sidecar"
+../scripts/build-mcp-sidecar.sh aarch64-apple-darwin
+../scripts/build-mcp-sidecar.sh x86_64-apple-darwin
+lipo -create \
+  src-tauri/binaries/solomd-mcp-aarch64-apple-darwin \
+  src-tauri/binaries/solomd-mcp-x86_64-apple-darwin \
+  -output src-tauri/binaries/solomd-mcp-universal-apple-darwin
+
 echo "==> Building .app (no dmg yet)"
 # Every credential Tauri would notarize with is unset here on purpose: it must
 # skip notarization, because the .app is still going to be patched (file icons,
@@ -60,10 +68,12 @@ APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/SoloMD.app"
 echo "==> Injecting file-type icon into Info.plist"
 cp src-tauri/icons/file_icon.icns "$APP/Contents/Resources/file_icon.icns"
 PLIST="$APP/Contents/Info.plist"
-# CFBundleDocumentTypes has two entries (md + txt). Add CFBundleTypeIconFile to each.
+# CFBundleDocumentTypes entries: add CFBundleTypeIconFile to each existing entry.
 for i in 0 1; do
-  /usr/libexec/PlistBuddy -c "Delete :CFBundleDocumentTypes:${i}:CFBundleTypeIconFile" "$PLIST" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:${i}:CFBundleTypeIconFile string file_icon.icns" "$PLIST"
+  if /usr/libexec/PlistBuddy -c "Print :CFBundleDocumentTypes:${i}" "$PLIST" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Delete :CFBundleDocumentTypes:${i}:CFBundleTypeIconFile" "$PLIST" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:${i}:CFBundleTypeIconFile string file_icon.icns" "$PLIST"
+  fi
 done
 
 echo "==> Embedding the Quick Look extension (#351)"
@@ -95,6 +105,7 @@ rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 xcrun notarytool submit "$ZIP" \
   "${ASC_NOTARY_AUTH[@]}" \
+  --no-s3-acceleration \
   --wait
 rm -f "$ZIP"
 
@@ -113,12 +124,21 @@ rm -f "$DMG"
 hdiutil create -volname SoloMD -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 
 echo "==> Signing dmg"
-codesign --force --sign "$APPLE_SIGNING_IDENTITY" "$DMG"
+codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG"
+
+echo "==> Notarizing + stapling dmg"
+xcrun notarytool submit "$DMG" \
+  "${ASC_NOTARY_AUTH[@]}" \
+  --no-s3-acceleration \
+  --wait
+xcrun stapler staple "$DMG"
 
 echo ""
 echo "==> Verifying"
-spctl -a -vvv "$APP" || echo "(spctl: check above)"
+spctl -a -vvv "$APP" || echo "(spctl app: check above)"
+spctl -a -t open --context context:primary-signature -vvv "$DMG" || echo "(spctl dmg: check above)"
 xcrun stapler validate "$APP"
+xcrun stapler validate "$DMG"
 
 echo ""
 echo "==> Done: $DMG"

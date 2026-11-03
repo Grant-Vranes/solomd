@@ -133,10 +133,20 @@ pub async fn write_file(
 ) -> Result<(), String> {
     let path_for_dispatch = path.clone();
     let content_for_dispatch = content.clone();
+    let app_for_write = app.clone();
     tauri::async_runtime::spawn_blocking({
         let path = path.clone();
         let content = content.clone();
-        move || write_file_inner(path, content, encoding)
+        move || {
+            #[cfg(target_os = "android")]
+            if path.starts_with("content://") {
+                let bytes = encode_for_disk(&content, &encoding)?;
+                return write_android_content_uri(&app_for_write, &path, &bytes);
+            }
+            #[cfg(not(target_os = "android"))]
+            let _ = &app_for_write;
+            write_file_inner(path, content, encoding)
+        }
     })
     .await
     .map_err(|e| format!("join: {e}"))??;
@@ -214,16 +224,42 @@ fn extract_tags_for_dispatch(body: &str) -> Vec<String> {
     tags
 }
 
-pub fn write_file_inner(path: String, content: String, encoding: String) -> Result<(), String> {
+/// Encode `content` into the bytes that go on disk for `encoding`.
+///
+/// encoding_rs's `Encoding::encode` never produces UTF-16: per the WHATWG
+/// spec the *output encoding* of UTF-16LE/BE is UTF-8, so a UTF-16 file
+/// used to be silently rewritten as UTF-8. UTF-16 is therefore encoded by
+/// hand, always with a BOM — the reader only recognises UTF-16 by its BOM
+/// (chardetng never guesses UTF-16), so a BOM-less write would not reopen
+/// as UTF-16.
+pub fn encode_for_disk(content: &str, encoding: &str) -> Result<Vec<u8>, String> {
     let enc = Encoding::for_label(encoding.as_bytes()).unwrap_or(UTF_8);
-    let (cow, _, had_errors) = enc.encode(&content);
+    if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
+        let le = enc == encoding_rs::UTF_16LE;
+        let mut out = Vec::with_capacity(2 + content.len() * 2);
+        out.extend_from_slice(if le { &[0xFF, 0xFE] } else { &[0xFE, 0xFF] });
+        for unit in content.encode_utf16() {
+            out.extend_from_slice(&if le {
+                unit.to_le_bytes()
+            } else {
+                unit.to_be_bytes()
+            });
+        }
+        return Ok(out);
+    }
+    let (cow, _, had_errors) = enc.encode(content);
     if had_errors {
         return Err(format!(
             "Some characters cannot be represented in {}",
             enc.name()
         ));
     }
-    fs::write(&path, cow.as_ref()).map_err(|e| format!("write failed: {e}"))?;
+    Ok(cow.into_owned())
+}
+
+pub fn write_file_inner(path: String, content: String, encoding: String) -> Result<(), String> {
+    let bytes = encode_for_disk(&content, &encoding)?;
+    fs::write(&path, &bytes).map_err(|e| format!("write failed: {e}"))?;
 
     super::watcher::mark_self_write(&path);
 
@@ -246,12 +282,99 @@ pub async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
     .map_err(|e| format!("join: {e}"))?
 }
 
+/// Upper bound for `fetch_image_bytes`: an image bigger than this is not
+/// something anyone means to paste into a forum post, and it keeps a bad URL
+/// from streaming an arbitrary amount of data into memory.
+const FETCH_IMAGE_MAX_BYTES: usize = 50 * 1024 * 1024;
+
+/// #362 — fetch a remote (http/https) image's bytes for "Copy image".
+///
+/// The webview can display a remote `<img>` but can't read its pixels: a
+/// cross-origin image without CORS headers taints the canvas, and `fetch()`
+/// from the page is blocked by the same rule. Fetching from Rust has no such
+/// restriction. Only http(s) URLs are accepted; the body is capped at
+/// `FETCH_IMAGE_MAX_BYTES`.
+#[tauri::command]
+pub async fn fetch_image_bytes(url: String) -> Result<Vec<u8>, String> {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err("only http(s) URLs can be fetched".into());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent(concat!("SoloMD/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("client: {e}"))?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {status}"));
+    }
+    if let Some(len) = resp.content_length() {
+        if len as usize > FETCH_IMAGE_MAX_BYTES {
+            return Err("image is too large".into());
+        }
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("read failed: {e}"))?;
+    if bytes.len() > FETCH_IMAGE_MAX_BYTES {
+        return Err("image is too large".into());
+    }
+    Ok(bytes.to_vec())
+}
+
 /// Write raw bytes to disk. Used for binary export targets like DOCX/PDF.
 #[tauri::command]
-pub async fn write_binary_file(path: String, data: Vec<u8>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || write_binary_file_inner(path, data))
-        .await
-        .map_err(|e| format!("join: {e}"))?
+pub async fn write_binary_file(
+    app: tauri::AppHandle,
+    path: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "android")]
+        if path.starts_with("content://") {
+            return write_android_content_uri(&app, &path, &data);
+        }
+        #[cfg(not(target_os = "android"))]
+        let _ = &app;
+        write_binary_file_inner(path, data)
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+}
+
+/// #148 / Android export fix — `saveDialog` on Android launches SAF's
+/// `Intent.ACTION_CREATE_DOCUMENT` and returns a `content://` URI, which
+/// `std::fs::write` / `std::fs::create_dir_all` cannot open (attempting to
+/// `mkdir("content:/...")` on Android's read-only `/` rootfs fails with
+/// `EROFS` / `ENOENT` and leaves a 0-byte file). Write through ContentResolver
+/// via `tauri_plugin_fs::FsExt`, falling back to `MainActivity.writeContentUriBase64`
+/// for providers that reject `"wt"` on `openAssetFileDescriptor`.
+#[cfg(target_os = "android")]
+fn write_android_content_uri(
+    app: &tauri::AppHandle,
+    uri: &str,
+    data: &[u8],
+) -> Result<(), String> {
+    use std::io::Write;
+    use std::str::FromStr;
+    use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
+
+    let Ok(fp) = FilePath::from_str(uri);
+    let mut opts = OpenOptions::new();
+    opts.read(false).write(true).create(true).truncate(true);
+    if let Ok(mut file) = app.fs().open(fp, opts) {
+        if file.write_all(data).and_then(|()| file.flush()).is_ok() {
+            return Ok(());
+        }
+    }
+    super::saf_android::write_content_uri_bytes(uri, data)
 }
 
 pub fn write_binary_file_inner(path: String, data: Vec<u8>) -> Result<(), String> {
@@ -286,10 +409,276 @@ pub fn print_webview(window: tauri::WebviewWindow) -> Result<(), String> {
     window.print().map_err(|e| format!("print failed: {e}"))
 }
 
-#[cfg(mobile)]
+/// macOS "Export PDF (text)": write the print layout straight to `path`.
+///
+/// `print_webview` opens the system print sheet, and on a Mac with no printer
+/// set up that sheet asks the user to add one before it shows "Save as PDF"
+/// — people read that as "exporting a PDF needs a printer". This runs the
+/// same WKWebView print operation (same @media print layout, real selectable
+/// text) as a save job: NSPrintSaveJob + NSPrintJobSavingURL, with the print
+/// and progress panels off, so no printer is ever involved.
+///
+/// `paper` / `margins` are in points (1/72 in) when the user chose a page
+/// size (Settings → PDF or `pdf:` front matter); otherwise the system default
+/// paper is used, as the print sheet would.
+#[cfg(target_os = "macos")]
 #[tauri::command]
-pub fn print_webview(_window: tauri::WebviewWindow) -> Result<(), String> {
-    Err("print is not available on mobile".to_string())
+pub async fn print_webview_to_pdf(
+    window: tauri::WebviewWindow,
+    path: String,
+    paper: Option<(f64, f64)>,
+    margins: Option<(f64, f64, f64, f64)>,
+) -> Result<(), String> {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSSize, NSString, NSURL};
+
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {
+        static NSPrintSaveJob: &'static NSString;
+        static NSPrintJobSavingURL: &'static NSString;
+    }
+
+    let _ = std::fs::remove_file(&path);
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    let target = path.clone();
+    window
+        .with_webview(move |wv| unsafe {
+            let webview = wv.inner() as *mut AnyObject;
+            if webview.is_null() {
+                let _ = tx.send(Err("no webview".into()));
+                return;
+            }
+            let shared: *mut AnyObject = msg_send![class!(NSPrintInfo), sharedPrintInfo];
+            let info: *mut AnyObject = msg_send![shared, copy];
+            let _: () = msg_send![info, setJobDisposition: NSPrintSaveJob];
+            let url = NSURL::fileURLWithPath(&NSString::from_str(&target));
+            let dict: *mut AnyObject = msg_send![info, dictionary];
+            let _: () = msg_send![dict, setObject: &*url, forKey: NSPrintJobSavingURL];
+            if let Some((w, h)) = paper {
+                let _: () = msg_send![info, setPaperSize: NSSize::new(w, h)];
+            }
+            // Same as Tauri's own print (wry's print_with_options): margins
+            // default to 0 and the @page / overlay CSS does the spacing, so
+            // the file matches what the print sheet produced.
+            let (top, right, bottom, left) = margins.unwrap_or((0.0, 0.0, 0.0, 0.0));
+            let _: () = msg_send![info, setTopMargin: top];
+            let _: () = msg_send![info, setRightMargin: right];
+            let _: () = msg_send![info, setBottomMargin: bottom];
+            let _: () = msg_send![info, setLeftMargin: left];
+            let op: *mut AnyObject = msg_send![webview, printOperationWithPrintInfo: info];
+            let _: () = msg_send![info, release];
+            if op.is_null() {
+                let _ = tx.send(Err("WKWebView returned no print operation".into()));
+                return;
+            }
+            let _: () = msg_send![op, setShowsPrintPanel: false];
+            let _: () = msg_send![op, setShowsProgressPanel: false];
+            let _: () = msg_send![op, setCanSpawnSeparateThread: true];
+            // Window-modal, like wry. (A synchronous `runOperation` on a
+            // WKWebView print operation never finishes paginating: it kept
+            // appending pages until the file passed 400 MB.) It returns at
+            // once; completion is detected from the file below.
+            let nswindow: *mut AnyObject = msg_send![webview, window];
+            let nil: *mut AnyObject = std::ptr::null_mut();
+            let _: () = msg_send![
+                op,
+                runOperationModalForWindow: nswindow,
+                delegate: nil,
+                didRunSelector: None::<objc2::runtime::Sel>,
+                contextInfo: std::ptr::null_mut::<std::ffi::c_void>()
+            ];
+            let _ = tx.send(Ok(()));
+        })
+        .map_err(|e| format!("with_webview: {e}"))?;
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .map_err(|_| "could not start the print operation".to_string())??;
+    // Done when the file is a complete PDF (ends with %%EOF) and has stopped
+    // growing. Bounded in time and size so a runaway job can't fill the disk.
+    let path2 = path.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        use std::io::{Read, Seek, SeekFrom};
+        const MAX_BYTES: u64 = 200 * 1024 * 1024;
+        let start = std::time::Instant::now();
+        let mut last = 0u64;
+        let mut stable = 0u32;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if start.elapsed() > std::time::Duration::from_secs(120) {
+                return Err("PDF export timed out".into());
+            }
+            let Ok(meta) = std::fs::metadata(&path2) else { continue };
+            let len = meta.len();
+            if len > MAX_BYTES {
+                return Err("PDF export stopped: the file grew past 200 MB".into());
+            }
+            if len == 0 || len != last {
+                last = len;
+                stable = 0;
+                continue;
+            }
+            stable += 1;
+            if stable < 2 {
+                continue;
+            }
+            let mut f = std::fs::File::open(&path2).map_err(|e| e.to_string())?;
+            let tail = len.min(1024);
+            f.seek(SeekFrom::End(-(tail as i64))).map_err(|e| e.to_string())?;
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            if buf.windows(5).any(|w| w == b"%%EOF") {
+                return Ok(());
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn print_webview_to_pdf(
+    _window: tauri::WebviewWindow,
+    _path: String,
+    _paper: Option<(f64, f64)>,
+    _margins: Option<(f64, f64, f64, f64)>,
+) -> Result<(), String> {
+    Err("direct PDF export is macOS-only; use print_webview".into())
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub async fn print_webview(_window: tauri::WebviewWindow) -> Result<(), String> {
+    super::saf_android::android_print_webview("SoloMD")?;
+    tauri::async_runtime::spawn_blocking(|| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(300) {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if super::saf_android::android_poll_print_finished().unwrap_or(false) {
+                return Ok(());
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+}
+
+#[cfg(target_os = "ios")]
+mod ios_print {
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject, Bool, NSObject};
+    use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
+    use std::ptr::null_mut;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[link(name = "UIKit", kind = "framework")]
+    extern "C" {}
+
+    pub static PRINT_DONE: AtomicBool = AtomicBool::new(false);
+    static DELEGATE: AtomicUsize = AtomicUsize::new(0);
+
+    declare_class!(
+        struct PrintDelegate;
+
+        unsafe impl ClassType for PrintDelegate {
+            type Super = NSObject;
+            type Mutability = mutability::InteriorMutable;
+            const NAME: &'static str = "SoloMDPrintDelegate";
+        }
+
+        impl DeclaredClass for PrintDelegate {}
+
+        unsafe impl PrintDelegate {
+            #[method(printInteractionControllerDidDismissPrinterOptions:)]
+            fn did_dismiss(&self, _controller: *mut AnyObject) {
+                PRINT_DONE.store(true, Ordering::SeqCst);
+            }
+
+            #[method(printInteractionControllerDidFinishJob:)]
+            fn did_finish(&self, _controller: *mut AnyObject) {
+                PRINT_DONE.store(true, Ordering::SeqCst);
+            }
+        }
+    );
+
+    impl PrintDelegate {
+        fn new() -> Retained<Self> {
+            let this = Self::alloc().set_ivars(());
+            unsafe { msg_send_id![super(this), init] }
+        }
+    }
+
+    pub unsafe fn present(webview: *mut AnyObject) -> Result<(), String> {
+        if webview.is_null() {
+            return Err("no webview".into());
+        }
+        let Some(pic_cls) = AnyClass::get("UIPrintInteractionController") else {
+            return Err("UIPrintInteractionController unavailable".into());
+        };
+        let pic: *mut AnyObject = msg_send![pic_cls, sharedPrintController];
+        if pic.is_null() {
+            return Err("sharedPrintController returned null".into());
+        }
+        if let Some(info_cls) = AnyClass::get("UIPrintInfo") {
+            let info: *mut AnyObject = msg_send![info_cls, printInfo];
+            if !info.is_null() {
+                // UIPrintInfoOutputGeneral = 0
+                let _: () = msg_send![info, setOutputType: 0isize];
+                let _: () = msg_send![pic, setPrintInfo: info];
+            }
+        }
+        let formatter: *mut AnyObject = msg_send![webview, viewPrintFormatter];
+        if formatter.is_null() {
+            return Err("WKWebView returned no viewPrintFormatter".into());
+        }
+        let _: () = msg_send![pic, setPrintFormatter: formatter];
+
+        let mut delegate = DELEGATE.load(Ordering::SeqCst) as *mut AnyObject;
+        if delegate.is_null() {
+            delegate = Retained::into_raw(PrintDelegate::new()) as *mut AnyObject;
+            DELEGATE.store(delegate as usize, Ordering::SeqCst);
+        }
+        let _: () = msg_send![pic, setDelegate: delegate];
+        PRINT_DONE.store(false, Ordering::SeqCst);
+
+        let ok: Bool = msg_send![
+            pic,
+            presentAnimated: Bool::YES,
+            completionHandler: null_mut::<AnyObject>()
+        ];
+        if !ok.as_bool() {
+            return Err("failed to present UIPrintInteractionController".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub async fn print_webview(window: tauri::WebviewWindow) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    window
+        .with_webview(move |wv| unsafe {
+            let res = ios_print::present(wv.inner() as *mut objc2::runtime::AnyObject);
+            let _ = tx.send(res);
+        })
+        .map_err(|e| format!("with_webview: {e}"))?;
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .map_err(|_| "could not start the print operation".to_string())??;
+    tauri::async_runtime::spawn_blocking(|| {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(300) {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if ios_print::PRINT_DONE.swap(false, Ordering::SeqCst) {
+                return Ok(());
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
 }
 
 /// Copy a file from `src` to `dst`, creating parent dirs as needed.
@@ -371,9 +760,22 @@ pub fn fs_delete(path: String) -> Result<(), String> {
 /// empty tree under its own name, which reads as "my notes are gone".
 /// Matching on `read_dir`'s error string would be a guess: it is localized on
 /// Windows.
+/// Version of the system webview (WebView2 on Windows, e.g. "154.0.4258.48").
+/// The frontend picks the Windows editor engine from it: CodeMirror's
+/// input-method problems were WebView2-side and are gone from 154 on.
+#[tauri::command]
+pub fn webview_runtime_version() -> Option<String> {
+    tauri::webview_version().ok()
+}
+
 #[tauri::command]
 pub fn fs_dir_exists(path: String) -> bool {
     Path::new(&path).is_dir()
+}
+
+#[tauri::command]
+pub fn fs_file_exists(path: String) -> bool {
+    Path::new(&path).is_file()
 }
 
 #[tauri::command]
@@ -1603,6 +2005,307 @@ pub async fn delete_frontmatter_property(
     .map_err(|e| format!("join: {e}"))?
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UpdateProgressPayload {
+    pub version: String,
+    pub downloaded: u64,
+    pub total: Option<u64>,
+    pub percent: Option<u8>,
+    pub source: String,
+}
+
+fn installer_asset_name(clean_ver: &str) -> Option<String> {
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        return Some(format!("SoloMD_{clean_ver}_arm64_en-US.msi"));
+    }
+    #[cfg(all(target_os = "windows", not(target_arch = "aarch64")))]
+    {
+        return Some(format!("SoloMD_{clean_ver}_x64_en-US.msi"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return Some(format!("SoloMD_{clean_ver}_universal.dmg"));
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        return Some(format!("SoloMD_{clean_ver}_aarch64.AppImage"));
+    }
+    #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
+    {
+        return Some(format!("SoloMD_{clean_ver}_amd64.AppImage"));
+    }
+    #[cfg(target_os = "android")]
+    {
+        return Some(format!("SoloMD_{clean_ver}_arm64-v8a.apk"));
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+async fn probe_is_china_network(client: &reqwest::Client) -> bool {
+    for trace_url in [
+        "https://solomd.app/cdn-cgi/trace",
+        "https://www.cloudflare.com/cdn-cgi/trace",
+    ] {
+        if let Ok(resp) = client
+            .get(trace_url)
+            .timeout(std::time::Duration::from_millis(2500))
+            .send()
+            .await
+        {
+            if let Ok(text) = resp.text().await {
+                if text.lines().any(|line| line.trim() == "loc=CN") {
+                    return true;
+                }
+                if text.lines().any(|line| line.starts_with("loc=")) {
+                    return false;
+                }
+            }
+        }
+    }
+    false
+}
+
+async fn resolve_gitee_asset_url(
+    client: &reqwest::Client,
+    tag: &str,
+    asset_name: &str,
+) -> Option<String> {
+    let api_url = format!("https://gitee.com/api/v5/repos/zhitong45/solomd/releases/tags/{tag}");
+    let resp = client
+        .get(&api_url)
+        .timeout(std::time::Duration::from_secs(6))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let assets = json.get("assets")?.as_array()?;
+    for asset in assets {
+        let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if name == asset_name {
+            if let Some(url) = asset.get("browser_download_url").and_then(|v| v.as_str()) {
+                if !url.is_empty() {
+                    return Some(url.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Download the platform installer for `version` (switching to Gitee automatically
+/// when the visitor is in China, with cross-mirror fallback between Gitee and GitHub)
+/// and launch the installer directly.
+#[tauri::command]
+pub async fn download_and_install_update(
+    version: String,
+    prefer_cn: bool,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use std::io::Write;
+    use tauri::Emitter;
+
+    let clean_ver = version.trim().trim_start_matches('v').to_string();
+    if clean_ver.is_empty() {
+        return Err("empty version".to_string());
+    }
+    let tag = format!("v{clean_ver}");
+    let asset_name = installer_asset_name(&clean_ver)
+        .ok_or_else(|| "direct update installer not supported on this platform".to_string())?;
+
+    let client = reqwest::Client::builder()
+        .user_agent(format!("SoloMD-Updater/{clean_ver}"))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("http client build failed: {e}"))?;
+
+    let is_cn = if prefer_cn {
+        true
+    } else {
+        probe_is_china_network(&client).await
+    };
+
+    let mut candidates: Vec<(&'static str, String)> = Vec::new();
+    let github_url = format!(
+        "https://github.com/zhitongblog/solomd/releases/download/{tag}/{asset_name}"
+    );
+    let gitee_direct_url = format!(
+        "https://gitee.com/zhitong45/solomd/releases/download/{tag}/{asset_name}"
+    );
+
+    if is_cn {
+        if let Some(api_dl) = resolve_gitee_asset_url(&client, &tag, &asset_name).await {
+            candidates.push(("Gitee", api_dl));
+        }
+        candidates.push(("Gitee", gitee_direct_url));
+        candidates.push(("GitHub", github_url));
+    } else {
+        candidates.push(("GitHub", github_url));
+        if let Some(api_dl) = resolve_gitee_asset_url(&client, &tag, &asset_name).await {
+            candidates.push(("Gitee", api_dl));
+        }
+        candidates.push(("Gitee", gitee_direct_url));
+    }
+    candidates.dedup_by(|a, b| a.1 == b.1);
+
+    let dest_dir = std::env::temp_dir();
+    let part_path = dest_dir.join(format!("{asset_name}.part"));
+    let dest_path = dest_dir.join(&asset_name);
+
+    let mut last_err = String::from("no download candidates succeeded");
+    let mut downloaded_ok = false;
+
+    for (source, url) in candidates {
+        let resp = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("{source} request failed: {e}");
+                continue;
+            }
+        };
+        if !resp.status().is_success() {
+            last_err = format!("{source} returned HTTP {}", resp.status());
+            continue;
+        }
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if content_type.contains("text/html") {
+            last_err = format!("{source} returned HTML instead of binary installer");
+            continue;
+        }
+
+        let total = resp.content_length();
+        let mut file = match fs::File::create(&part_path) {
+            Ok(f) => f,
+            Err(e) => return Err(format!("create temp installer failed: {e}")),
+        };
+
+        let mut downloaded: u64 = 0;
+        let mut last_emit = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        let mut stream = resp.bytes_stream();
+        let mut stream_err: Option<String> = None;
+
+        while let Some(chunk_res) = stream.next().await {
+            match chunk_res {
+                Ok(chunk) => {
+                    if let Err(e) = file.write_all(&chunk) {
+                        stream_err = Some(format!("write temp installer failed: {e}"));
+                        break;
+                    }
+                    downloaded += chunk.len() as u64;
+                    if last_emit.elapsed() >= std::time::Duration::from_millis(150) {
+                        last_emit = std::time::Instant::now();
+                        let percent = total.and_then(|t| {
+                            if t > 0 {
+                                Some(((downloaded.saturating_mul(100)) / t).min(100) as u8)
+                            } else {
+                                None
+                            }
+                        });
+                        let _ = app.emit(
+                            "solomd://update-progress",
+                            UpdateProgressPayload {
+                                version: clean_ver.clone(),
+                                downloaded,
+                                total,
+                                percent,
+                                source: source.to_string(),
+                            },
+                        );
+                    }
+                }
+                Err(e) => {
+                    stream_err = Some(format!("{source} stream interrupted: {e}"));
+                    break;
+                }
+            }
+        }
+
+        if let Some(err) = stream_err {
+            let _ = fs::remove_file(&part_path);
+            last_err = err;
+            continue;
+        }
+
+        if downloaded < 100_000 {
+            let _ = fs::remove_file(&part_path);
+            last_err = format!("{source} file too small ({downloaded} bytes)");
+            continue;
+        }
+
+        let _ = file.flush();
+        drop(file);
+        if dest_path.exists() {
+            let _ = fs::remove_file(&dest_path);
+        }
+        fs::rename(&part_path, &dest_path)
+            .map_err(|e| format!("finalize installer file failed: {e}"))?;
+
+        let _ = app.emit(
+            "solomd://update-progress",
+            UpdateProgressPayload {
+                version: clean_ver.clone(),
+                downloaded,
+                total: Some(downloaded),
+                percent: Some(100),
+                source: source.to_string(),
+            },
+        );
+        downloaded_ok = true;
+        break;
+    }
+
+    if !downloaded_ok {
+        return Err(last_err);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("msiexec")
+            .arg("/i")
+            .arg(&dest_path)
+            .spawn()
+            .map_err(|e| format!("failed to launch MSI installer: {e}"))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&dest_path)
+            .spawn()
+            .map_err(|e| format!("failed to open DMG installer: {e}"))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&dest_path, fs::Permissions::from_mode(0o755));
+        }
+        let parent = dest_path.parent().unwrap_or(std::path::Path::new("/tmp"));
+        let _ = std::process::Command::new("xdg-open").arg(parent).spawn();
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        return Err("android_use_browser_fallback".to_string());
+    }
+
+    Ok(dest_path.to_string_lossy().to_string())
+}
+
 #[cfg(test)]
 mod list_dir_times_tests {
     use super::*;
@@ -1650,5 +2353,72 @@ mod list_dir_times_tests {
         let e = DirEntry { name: "x".into(), path: "/x".into(), is_dir: false, modified: None, created: None };
         let json = serde_json::to_string(&e).unwrap();
         assert!(!json.contains("modified") && !json.contains("created"), "{json}");
+    }
+}
+
+#[cfg(test)]
+mod encoding_round_trip_tests {
+    use super::*;
+
+    /// Write `original`, open it, save it back unchanged, and return the
+    /// first read plus the bytes left on disk.
+    fn round_trip(encoding: &str, original: &[u8]) -> (FileReadResult, Vec<u8>) {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f.txt");
+        fs::write(&p, original).unwrap();
+        let path = p.to_string_lossy().to_string();
+        let read = read_file_inner(path.clone()).unwrap();
+        assert_eq!(read.encoding, encoding);
+        write_file_inner(path.clone(), read.content.clone(), read.encoding.clone()).unwrap();
+        let reread = read_file_inner(path).unwrap();
+        assert_eq!(reread.encoding, encoding);
+        assert_eq!(reread.content, read.content);
+        (read, fs::read(&p).unwrap())
+    }
+
+    fn utf16(text: &str, le: bool) -> Vec<u8> {
+        let mut bytes = if le { vec![0xFF, 0xFE] } else { vec![0xFE, 0xFF] };
+        for u in text.encode_utf16() {
+            bytes.extend_from_slice(&if le { u.to_le_bytes() } else { u.to_be_bytes() });
+        }
+        bytes
+    }
+
+    #[test]
+    fn utf16le_with_bom_round_trips() {
+        let text = "UTF-16 文件\nline 2 😀";
+        let bytes = utf16(text, true);
+        let (read, disk) = round_trip("UTF-16LE", &bytes);
+        assert!(read.had_bom);
+        assert_eq!(read.content, text);
+        assert_eq!(disk, bytes);
+    }
+
+    #[test]
+    fn utf16be_with_bom_round_trips() {
+        let text = "UTF-16 文件\nline 2 😀";
+        let bytes = utf16(text, false);
+        let (read, disk) = round_trip("UTF-16BE", &bytes);
+        assert!(read.had_bom);
+        assert_eq!(read.content, text);
+        assert_eq!(disk, bytes);
+    }
+
+    #[test]
+    fn gbk_round_trips() {
+        let text = "这是一个中文文件，用来测试 GBK 编码的读取和保存。\n第二行内容也是中文。";
+        let (bytes, _, _) = encoding_rs::GBK.encode(text);
+        let (read, disk) = round_trip("GBK", &bytes);
+        assert_eq!(read.content, text);
+        assert_eq!(disk, bytes.as_ref());
+    }
+
+    #[test]
+    fn big5_round_trips() {
+        let text = "這是一個繁體中文檔案，用來測試大五碼的讀取與儲存。\n第二行內容也是繁體中文。";
+        let (bytes, _, _) = encoding_rs::BIG5.encode(text);
+        let (read, disk) = round_trip("Big5", &bytes);
+        assert_eq!(read.content, text);
+        assert_eq!(disk, bytes.as_ref());
     }
 }

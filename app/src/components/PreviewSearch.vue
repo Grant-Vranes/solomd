@@ -126,6 +126,12 @@ function onInput() {
 function onKeydown(e: KeyboardEvent) {
   // CJK/IME guard — Enter during composition belongs to the IME.
   if (e.isComposing || e.keyCode === 229) return;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key.toLowerCase() === 'f' || e.code === 'KeyF')) {
+    e.preventDefault();
+    e.stopPropagation();
+    close();
+    return;
+  }
   if (e.key === 'Enter') {
     e.preventDefault();
     if (e.shiftKey) goPrev(); else goNext();
@@ -181,17 +187,17 @@ defineExpose({ focusInput });
       ref="inputRef"
       class="ps-input"
       type="text"
-      :placeholder="t('previewSearchPlaceholder')"
+      :placeholder="t('toolbar.previewSearchPlaceholder')"
       v-model="query"
       @input="onInput"
       @keydown="onKeydown"
     />
     <span class="ps-count" v-if="query.trim()">
-      {{ matchCount > 0 ? `${currentIdx + 1}/${matchCount}` : t('noResults') }}
+      {{ matchCount > 0 ? `${currentIdx + 1}/${matchCount}` : t('toolbar.noResults') }}
     </span>
-    <button class="ps-btn" :disabled="matchCount === 0" @click="goPrev" title="Previous">&#9650;</button>
-    <button class="ps-btn" :disabled="matchCount === 0" @click="goNext" title="Next">&#9660;</button>
-    <button class="ps-btn ps-btn--close" @click="close" title="Close">&#10005;</button>
+    <button class="ps-btn" :disabled="matchCount === 0" :title="t('plainFind.prev')" @click="goPrev">&#9650;</button>
+    <button class="ps-btn" :disabled="matchCount === 0" :title="t('plainFind.next')" @click="goNext">&#9660;</button>
+    <button class="ps-btn ps-btn--close" :title="t('plainFind.close')" @click="close">&#10005;</button>
   </div>
 </template>
 

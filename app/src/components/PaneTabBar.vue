@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
 import { revealInFileManager } from '../lib/reveal-in-file-manager';
 import { useTabsStore } from '../stores/tabs';
 import { useToastsStore } from '../stores/toasts';
@@ -9,14 +10,22 @@ import { useWorkspaceStore } from '../stores/workspace';
 import { useFiles } from '../composables/useFiles';
 import { requestRevealInTree } from '../composables/useFileTreeReveal';
 import { shortcutLabel } from '../lib/keybindings';
-import { isMacOS } from '../lib/platform';
+import { revealLabelKey, usesCommandKey } from '../lib/platform';
+import { displayTabTitle, displayTabTooltip } from '../lib/tab-title';
 import { useI18n } from '../i18n';
+import Icon from './Icons.vue';
 import type { SplitDirection } from '../types';
 
-const props = defineProps<{
-  paneId: string;
-  activeTabId: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    paneId: string;
+    activeTabId: string;
+    /** 'pane': the strip at the top of a pane (default). 'header': rendered
+     *  inside the 52px window header by the shell (5.0 §3). */
+    placement?: 'pane' | 'header';
+  }>(),
+  { placement: 'pane' },
+);
 
 const tabs = useTabsStore();
 const tiles = useTilesStore();
@@ -24,7 +33,7 @@ const settings = useSettingsStore();
 const workspace = useWorkspaceStore();
 const files = useFiles();
 const { t } = useI18n();
-const macChord = isMacOS();
+const macChord = usesCommandKey();
 /** "New tab (Ctrl+N)" — the chord is read at render time so a rebind in
  *  Settings shows up here (same reason CommandPalette does it). */
 const newTabChord = shortcutLabel('file.new', settings.keybindings, macChord);
@@ -110,14 +119,29 @@ const ctxFlags = computed(() => {
     hasLeft: idx > 0,
     hasRight: idx < list.length - 1,
     hasOthers: list.length > 1,
-    hasSaved: list.some((x) => x.id !== ctxMenu.value!.tabId && x.content === x.savedContent),
+    hasSaved: list.some((x) => x.id !== ctxMenu.value!.tabId && x.content === x.savedContent && !x.pinned),
     hasAny: list.length > 0,
     // Issue #64 — "Open Enclosing Folder" only meaningful when the tab
     // is backed by a real on-disk path. Untitled / unsaved buffers have
     // no path, so the menu item is rendered disabled.
     hasFilePath: !!target?.filePath,
+    isMarkdown: target?.language === 'markdown',
+    showOutline: !!target?.showOutline,
+    pinned: !!target?.pinned,
   };
 });
+
+function onTogglePin() {
+  const m = ctxMenu.value;
+  closeCtxMenu();
+  if (m) tabs.togglePin(m.tabId);
+}
+
+function onToggleOutline() {
+  const m = ctxMenu.value;
+  closeCtxMenu();
+  if (m) tabs.toggleOutline(m.tabId);
+}
 
 async function closeMany(ids: string[]) {
   for (const id of ids) {
@@ -126,13 +150,68 @@ async function closeMany(ids: string[]) {
   }
 }
 
-async function onTabAction(action: 'close' | 'closeLeft' | 'closeRight' | 'closeOthers' | 'closeSaved' | 'closeAll' | 'revealInFolder' | 'revealInFileTree') {
+async function copyTextSafe(text: string) {
+  try {
+    await writeClipboardText(text);
+  } catch {
+    await navigator.clipboard?.writeText?.(text);
+  }
+}
+
+function relativeFilePath(fullPath: string): string {
+  const root = workspace.currentFolder;
+  if (!root) return fullPath;
+  const normRoot = root.replace(/\\/g, '/').replace(/\/+$/, '');
+  const normPath = fullPath.replace(/\\/g, '/');
+  const ci = /^[a-zA-Z]:\//.test(normRoot);
+  const r = ci ? normRoot.toLowerCase() : normRoot;
+  const p = ci ? normPath.toLowerCase() : normPath;
+  if (p.startsWith(r + '/')) {
+    return normPath.slice(normRoot.length + 1);
+  }
+  return fullPath.split(/[\\/]/).pop() || fullPath;
+}
+
+async function onTabAction(action: 'close' | 'closeLeft' | 'closeRight' | 'closeOthers' | 'closeSaved' | 'closeAll' | 'revealInFolder' | 'revealInFileTree' | 'copyFileName' | 'copyFilePath' | 'copyRelativePath') {
   const m = ctxMenu.value;
   closeCtxMenu();
   if (!m) return;
   const list = tabs.tabs;
   const idx = list.findIndex((t) => t.id === m.tabId);
   if (idx < 0) return;
+  if (action === 'copyFileName') {
+    const name = list[idx]?.fileName;
+    if (!name) return;
+    try {
+      await copyTextSafe(name);
+      useToastsStore().success(t('tabMenu.copyFileNameDone'));
+    } catch (e) {
+      useToastsStore().error(`${e}`);
+    }
+    return;
+  }
+  if (action === 'copyFilePath') {
+    const path = list[idx]?.filePath;
+    if (!path) return;
+    try {
+      await copyTextSafe(path);
+      useToastsStore().success(t('tabMenu.copyFilePathDone'));
+    } catch (e) {
+      useToastsStore().error(`${e}`);
+    }
+    return;
+  }
+  if (action === 'copyRelativePath') {
+    const path = list[idx]?.filePath;
+    if (!path) return;
+    try {
+      await copyTextSafe(relativeFilePath(path));
+      useToastsStore().success(t('tabMenu.copyFilePathDone'));
+    } catch (e) {
+      useToastsStore().error(`${e}`);
+    }
+    return;
+  }
   if (action === 'revealInFolder') {
     const path = list[idx]?.filePath;
     if (!path) return;
@@ -163,11 +242,11 @@ async function onTabAction(action: 'close' | 'closeLeft' | 'closeRight' | 'close
   const ids = (() => {
     switch (action) {
       case 'close':       return [m.tabId];
-      case 'closeLeft':   return list.slice(0, idx).map((x) => x.id);
-      case 'closeRight':  return list.slice(idx + 1).map((x) => x.id);
-      case 'closeOthers': return list.filter((x) => x.id !== m.tabId).map((x) => x.id);
-      case 'closeSaved':  return list.filter((x) => x.content === x.savedContent).map((x) => x.id);
-      case 'closeAll':    return list.map((x) => x.id);
+      case 'closeLeft':   return list.slice(0, idx).filter((x) => !x.pinned).map((x) => x.id);
+      case 'closeRight':  return list.slice(idx + 1).filter((x) => !x.pinned).map((x) => x.id);
+      case 'closeOthers': return list.filter((x) => x.id !== m.tabId && !x.pinned).map((x) => x.id);
+      case 'closeSaved':  return list.filter((x) => x.content === x.savedContent && !x.pinned).map((x) => x.id);
+      case 'closeAll':    return list.filter((x) => !x.pinned).map((x) => x.id);
     }
     return [];
   })();
@@ -287,30 +366,63 @@ function measureTabsOverflow() {
   tabsOverflow.value = !!el && el.scrollWidth > el.clientWidth + 1;
 }
 let tabsRO: ResizeObserver | null = null;
+// Startup: no synchronous scrollWidth read in onMounted — that forced a
+// layout of the whole app mid-mount. ResizeObserver's initial notification
+// arrives right after the first layout (before paint), and tab-list changes
+// are measured in the next animation frame, again before it paints.
+let tabsMeasureRaf = 0;
+function scheduleMeasureTabsOverflow() {
+  if (tabsMeasureRaf) return;
+  tabsMeasureRaf = requestAnimationFrame(() => {
+    tabsMeasureRaf = 0;
+    measureTabsOverflow();
+  });
+}
 onMounted(() => {
   if (typeof ResizeObserver !== 'undefined' && tabsEl.value) {
     tabsRO = new ResizeObserver(measureTabsOverflow);
     tabsRO.observe(tabsEl.value);
+  } else {
+    scheduleMeasureTabsOverflow();
   }
-  measureTabsOverflow();
 });
-onBeforeUnmount(() => tabsRO?.disconnect());
+onBeforeUnmount(() => {
+  tabsRO?.disconnect();
+  if (tabsMeasureRaf) cancelAnimationFrame(tabsMeasureRaf);
+  tabsMeasureRaf = 0;
+});
 watch(
-  () => tabs.tabs.map((x) => x.fileName).join('\u0000'),
-  () => nextTick(measureTabsOverflow),
+  () => tabs.tabs.map((x) => displayTabTitle(x, settings.tabTitleFromFirstLine)).join('\u0000'),
+  () => nextTick(scheduleMeasureTabsOverflow),
 );
 
 const tabListPos = ref<{ top: number; right: number } | null>(null);
+const tabListFilter = ref('');
+const tabListFilterInput = ref<HTMLInputElement | null>(null);
+const filteredTabList = computed(() => {
+  const q = tabListFilter.value.trim().toLowerCase();
+  if (!q) return tabs.tabs;
+  return tabs.tabs.filter(
+    (tl) =>
+      displayTabTitle(tl, settings.tabTitleFromFirstLine).toLowerCase().includes(q) ||
+      tl.fileName.toLowerCase().includes(q) ||
+      (tl.filePath && tl.filePath.toLowerCase().includes(q)),
+  );
+});
 function toggleTabList(e: MouseEvent) {
   if (tabListPos.value) {
     tabListPos.value = null;
+    tabListFilter.value = '';
     return;
   }
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  tabListFilter.value = '';
   tabListPos.value = { top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) };
+  nextTick(() => tabListFilterInput.value?.focus());
 }
 function pickFromTabList(tabId: string) {
   tabListPos.value = null;
+  tabListFilter.value = '';
   tiles.setActiveTab(props.paneId, tabId);
 }
 
@@ -387,7 +499,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="pane-tabbar">
+  <!-- 5.0 §3 — quiet pill tabs. `placement="pane"`: the strip at the top of
+       a pane (40px, hairline under it). `placement="header"`: rendered by the
+       shell inside the 52px window header, no chrome of its own; the empty
+       part of the strip is a window drag region, the tabs are not. -->
+  <div
+    class="pane-tabbar"
+    :class="`pane-tabbar--${placement}`"
+    :data-tauri-drag-region="placement === 'header' ? '' : undefined"
+  >
     <div class="tabs" ref="tabsEl" @wheel.prevent="onTabsWheel">
       <!-- The loop variable is `tab`, not `t`: `t` is the i18n function in
            this component, and `v-for="t in …"` silently shadowed it — any
@@ -397,46 +517,66 @@ onBeforeUnmount(() => {
         :key="tab.id"
         :data-tab-id="tab.id"
         class="tab"
-        :class="{ 'tab--active': tab.id === activeTabId, 'tab--dragging': tiles.dragTabId === tab.id }"
+        :class="{
+          'tab--active': tab.id === activeTabId,
+          'tab--dirty': tabs.isDirty(tab.id),
+          'tab--pinned': !!tab.pinned,
+          'tab--dragging': tiles.dragTabId === tab.id,
+        }"
+        role="tab"
+        :aria-selected="tab.id === activeTabId"
         @click="onTabClick(tab.id)"
         @pointerdown="onTabPointerDown($event, tab.id)"
         @mousedown.middle="onMiddlePointerDown($event, tab.id)"
         @contextmenu="onContextMenu($event, tab.id)"
-        :title="tab.filePath || tab.fileName"
+        :title="displayTabTooltip(tab, settings.tabTitleFromFirstLine)"
       >
-        <span class="tab__name">{{ tab.fileName }}</span>
-        <button
-          v-if="tab.language === 'markdown'"
-          class="tab__outline"
-          :class="{ 'tab__outline--active': tab.showOutline }"
-          :title="tab.showOutline ? t('tabMenu.hideOutline') : t('tabMenu.showOutline')"
-          @click.stop="tabs.toggleOutline(tab.id)"
-        >≡</button>
-        <span class="tab__dot" v-if="tabs.isDirty(tab.id)">●</span>
-        <button
-          class="tab__close"
-          @click.stop="files.closeTabSafe(tab.id)"
-          :aria-label="t('tabMenu.close')"
-        >×</button>
+        <span v-if="tab.pinned" class="tab__pin" aria-hidden="true">📌</span>
+        <span class="tab__name">{{ displayTabTitle(tab, settings.tabTitleFromFirstLine) }}</span>
+        <!-- One 16px slot at the end: the unsaved dot sits in it until the
+             pointer arrives, then the close button takes its place. -->
+        <span class="tab__end">
+          <span v-if="tabs.isDirty(tab.id)" class="tab__dot" aria-hidden="true"></span>
+          <button
+            class="tab__close"
+            :title="t('tabMenu.close')"
+            :aria-label="t('tabMenu.close')"
+            @pointerdown.stop
+            @click.stop="files.closeTabSafe(tab.id)"
+          >
+            <Icon name="close" :size="12" />
+          </button>
+        </span>
       </div>
     </div>
-    <button
-      v-if="tabsOverflow"
-      class="tabbar__list"
-      :class="{ 'tabbar__list--open': tabListPos }"
-      :title="t('tabMenu.allTabs')"
-      :aria-label="t('tabMenu.allTabs')"
-      :aria-expanded="!!tabListPos"
-      @click.stop="toggleTabList"
-    >⌄</button>
-    <button
-      ref="newMenuBtn"
-      class="tabbar__new"
-      :class="{ 'tabbar__new--open': newMenuOpen }"
-      :title="newTabChord ? `${t('tabMenu.newTab')} (${newTabChord})` : t('tabMenu.newTab')"
-      :aria-expanded="newMenuOpen"
-      @click.stop="toggleNewMenu"
-    >+<span class="tabbar__new-chevron">⌄</span></button>
+    <div class="tabbar__actions">
+      <button
+        v-if="tabsOverflow || tabs.tabs.length > 1"
+        class="tabbar__btn"
+        :class="{ 'tabbar__btn--open': tabListPos }"
+        :title="t('tabMenu.allTabs')"
+        :aria-label="t('tabMenu.allTabs')"
+        :aria-expanded="!!tabListPos"
+        @click.stop="toggleTabList"
+      >
+        <Icon name="chevron-down" :size="16" />
+      </button>
+      <!-- The "+" mirrors the toolbar's New File entry: a dropdown with the
+           file formats the app can create (markdown, plain text, Excalidraw,
+           draw.io) instead of always making a .md. -->
+      <button
+        ref="newMenuBtn"
+        class="tabbar__btn"
+        :class="{ 'tabbar__btn--open': newMenuOpen }"
+        :title="newTabChord ? `${t('tabMenu.newTab')} (${newTabChord})` : t('tabMenu.newTab')"
+        :aria-label="t('tabMenu.newTab')"
+        :aria-expanded="newMenuOpen"
+        :aria-haspopup="'menu'"
+        @click.stop="toggleNewMenu"
+      >
+        <Icon name="plus" :size="16" />
+      </button>
+    </div>
     <Teleport to="body">
       <div
         v-if="newMenuOpen && newMenuPos"
@@ -454,9 +594,15 @@ onBeforeUnmount(() => {
         <button class="ctx-item newfile-menu__item" role="menuitem" @click="runNew('drawio')">{{ t('toolbar.newDrawio') }}</button>
       </div>
     </Teleport>
+    <!-- Empty strip space after the "+" (browser-style). In the header this
+         is what drags the window; the tabs themselves never do. -->
+    <div
+      class="tabs__filler"
+      :data-tauri-drag-region="placement === 'header' ? '' : undefined"
+    ></div>
     <button
       v-if="canClosePane"
-      class="tabbar__close-pane"
+      class="tabbar__btn tabbar__close-pane"
       :title="t('cmd.tile.closePane')"
       :aria-label="t('cmd.tile.closePane')"
       @click.stop="tiles.closePane(paneId)"
@@ -465,13 +611,13 @@ onBeforeUnmount(() => {
            and closes the document, which is not what this does. `.stop`:
            the pane's own click handler would otherwise re-focus the pane that
            was just closed. -->
-      <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-        <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2" />
-        <path d="M6 6l4 4M10 6l-4 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="2.5" />
+        <path d="M9.5 9.5l5 5M14.5 9.5l-5 5" />
       </svg>
     </button>
 
-    <!-- #218 — all open tabs -->
+    <!-- #218 / #398 — all open tabs with quick filter -->
     <Teleport to="body">
       <div
         v-if="tabListPos"
@@ -480,17 +626,29 @@ onBeforeUnmount(() => {
         :style="{ top: tabListPos.top + 'px', right: tabListPos.right + 'px' }"
         @click.stop
       >
+        <div v-if="tabs.tabs.length > 3" class="tablist__search">
+          <input
+            ref="tabListFilterInput"
+            v-model="tabListFilter"
+            class="tablist__filter"
+            type="text"
+            :placeholder="settings.language === 'zh' ? '筛选已打开标签页…' : 'Filter open tabs…'"
+            @keydown.esc.stop="tabListPos = null"
+            @keydown.enter.prevent="filteredTabList[0] && pickFromTabList(filteredTabList[0].id)"
+          />
+        </div>
         <button
-          v-for="tl in tabs.tabs"
+          v-for="tl in filteredTabList"
           :key="tl.id"
           class="ctx-item tablist__item"
           :class="{ 'tablist__item--active': tl.id === activeTabId }"
           role="menuitem"
-          :title="tl.filePath || tl.fileName"
+          :title="displayTabTooltip(tl, settings.tabTitleFromFirstLine)"
           @click="pickFromTabList(tl.id)"
         >
-          <span class="tablist__name">{{ tl.fileName }}</span>
-          <span v-if="tabs.isDirty(tl.id)" class="tablist__dot">●</span>
+          <span v-if="tl.pinned" class="tablist__pin" aria-hidden="true">📌</span>
+          <span class="tablist__name">{{ displayTabTitle(tl, settings.tabTitleFromFirstLine) }}</span>
+          <span v-if="tabs.isDirty(tl.id)" class="tablist__dot" aria-hidden="true"></span>
         </button>
       </div>
     </Teleport>
@@ -500,9 +658,14 @@ onBeforeUnmount(() => {
       <div
         v-if="ctxMenu"
         class="ctx-menu"
+        role="menu"
         :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
         @click.stop
       >
+        <button class="ctx-item" @click="onTogglePin">
+          {{ ctxFlags?.pinned ? (settings.language === 'zh' ? '取消固定标签页' : 'Unpin Tab') : (settings.language === 'zh' ? '固定标签页' : 'Pin Tab') }}
+        </button>
+        <div class="ctx-sep" />
         <button class="ctx-item" @click="onTabAction('close')">{{ t('tabMenu.close') }}</button>
         <div class="ctx-sep" />
         <button class="ctx-item" :disabled="!ctxFlags?.hasLeft"   @click="onTabAction('closeLeft')">{{ t('tabMenu.closeLeft') }}</button>
@@ -511,8 +674,22 @@ onBeforeUnmount(() => {
         <div class="ctx-sep" />
         <button class="ctx-item" :disabled="!ctxFlags?.hasSaved" @click="onTabAction('closeSaved')">{{ t('tabMenu.closeSaved') }}</button>
         <button class="ctx-item" :disabled="!ctxFlags?.hasAny"   @click="onTabAction('closeAll')">{{ t('tabMenu.closeAll') }}</button>
+        <template v-if="ctxFlags?.isMarkdown">
+          <div class="ctx-sep" />
+          <!-- The per-tab outline toggle used to be a ≡ glyph on the tab
+               itself; 5.0 keeps tabs to name + close, so it lives here. -->
+          <button class="ctx-item" data-tab-outline @click="onToggleOutline">
+            {{ ctxFlags.showOutline ? t('tabMenu.hideOutline') : t('tabMenu.showOutline') }}
+          </button>
+        </template>
         <div class="ctx-sep" />
-        <button class="ctx-item" :disabled="!ctxFlags?.hasFilePath" @click="onTabAction('revealInFolder')">{{ t('tabMenu.revealInFolder') }}</button>
+        <button class="ctx-item" data-tab-copy-name @click="onTabAction('copyFileName')">{{ t('tabMenu.copyFileName') }}</button>
+        <button class="ctx-item" data-tab-copy-path :disabled="!ctxFlags?.hasFilePath" @click="onTabAction('copyFilePath')">{{ t('tabMenu.copyFilePath') }}</button>
+        <button class="ctx-item" data-tab-copy-rel-path :disabled="!ctxFlags?.hasFilePath" @click="onTabAction('copyRelativePath')">
+          {{ settings.language === 'zh' ? '复制相对路径' : 'Copy Relative Path' }}
+        </button>
+        <div class="ctx-sep" />
+        <button class="ctx-item" :disabled="!ctxFlags?.hasFilePath" @click="onTabAction('revealInFolder')">{{ t(revealLabelKey('tabMenu.revealInFolder')) }}</button>
         <button class="ctx-item" :disabled="!ctxFlags?.hasFilePath" @click="onTabAction('revealInFileTree')">{{ t('tabMenu.revealInFileTree') }}</button>
         <div class="ctx-sep" />
         <button class="ctx-item" @click="splitPane('horizontal')">{{ t('cmd.tile.splitRight') }}</button>
@@ -527,20 +704,36 @@ onBeforeUnmount(() => {
 <style scoped>
 .pane-tabbar {
   display: flex;
-  align-items: stretch;
-  height: var(--tabbar-h);
-  background: var(--bg-elev);
-  border-bottom: 1px solid var(--border);
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
   user-select: none;
+  -webkit-user-select: none;
   overflow: hidden;
   flex-shrink: 0;
+  min-width: 0;
+}
+.pane-tabbar--pane {
+  height: 40px;
+  background: var(--bg);
+  border-bottom: var(--bd-hair);
+}
+/* Inside the shell's window header: no surface of its own, header height,
+   vertically centred. The shell supplies the background and the border. */
+.pane-tabbar--header {
+  height: var(--header-h);
+  padding: 0;
+  background: transparent;
+  flex: 1 1 auto;
 }
 .tabs {
   display: flex;
-  flex: 1;
-  gap: 4px;
   align-items: center;
-  padding: 0 6px;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 100%;
+
   overflow-x: auto;
   scrollbar-width: none;
   /* Momentum + horizontal touch panning for the overflowing strip on iOS. */
@@ -548,23 +741,32 @@ onBeforeUnmount(() => {
   touch-action: pan-x;
 }
 .tabs::-webkit-scrollbar { display: none; }
+.tabs__filler {
+  flex: 1 1 0;
+  min-width: 0;
+  align-self: stretch;
+}
+.pane-tabbar--header .tabs__filler {
+  min-width: 24px;
+}
 
 .tab {
   display: flex;
   align-items: center;
-  gap: 6px;
-  max-width: 240px;
-  height: calc(100% - 6px);
-  margin: 3px 0;
-  padding: 0 8px 0 9px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--text-muted);
+  gap: 4px;
+  flex: 0 0 auto;
+  max-width: 220px;
+  height: 30px;
+  padding: 0 6px 0 12px;
+  border-radius: var(--r-md);
+  cursor: default;
+  font-size: 13px;
+  font-weight: 450;
+  color: var(--text-3);
   white-space: nowrap;
   position: relative;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+
   /* Pointer-based drag (#86): block vertical pan / pinch-zoom during a drag,
      but ALLOW horizontal panning. Tabs fill the whole strip, so a touch always
      lands on a `.tab`; `touch-action: none` here meant a finger swipe could
@@ -574,86 +776,142 @@ onBeforeUnmount(() => {
   touch-action: pan-x;
 }
 .tab:hover {
-  background: var(--bg-hover);
-  border-color: color-mix(in srgb, var(--text-faint) 45%, var(--border));
+  background: var(--fill-1);
+  color: var(--text-2);
+}
+.tab--active {
+  background: var(--fill-1);
+  color: var(--text);
+  font-weight: 540;
+}
+.tab--active:hover {
+  background: var(--fill-2);
+  color: var(--text);
+
 }
 .tab--dragging {
   opacity: 0.5;
 }
-.tab--active {
-  background: color-mix(in srgb, var(--accent) 16%, var(--bg));
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  color: var(--text);
-  font-weight: 600;
-}
+
 .tab__name {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tab__dot {
-  color: var(--accent);
+.tab__pin,
+.tablist__pin {
   font-size: 10px;
-}
-.tab__outline {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-faint);
-  padding: 1px 4px;
   line-height: 1;
-  border-radius: 3px;
-  opacity: 0;
-  transition: opacity 0.12s, color 0.12s, background 0.12s;
+  opacity: 0.75;
+  flex-shrink: 0;
 }
-.tab:hover .tab__outline,
-.tab--active .tab__outline {
-  opacity: 1;
+.tablist__search {
+  padding: 4px 4px 6px;
+  border-bottom: var(--bd-hair);
+  margin-bottom: 4px;
 }
-.tab__outline--active {
-  opacity: 1 !important;
-  color: var(--accent);
-  background: var(--bg-active);
-}
-.tab__outline:hover {
-  color: var(--accent);
-  background: var(--bg-hover);
-}
-.tab__close {
-  padding: 0 4px;
-  font-size: 14px;
-  line-height: 1;
-  color: var(--text-faint);
-  opacity: 0;
-  transition: opacity 0.12s;
-}
-.tab:hover .tab__close,
-.tab--active .tab__close {
-  opacity: 1;
-}
-.tab__close:hover {
+.tablist__filter {
+  width: 100%;
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--fill-1);
   color: var(--text);
-  background: var(--bg-active);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
 }
-.tabbar__new {
-  width: 32px;
-  padding: 0;
-  font-size: 16px;
-  color: var(--text-muted);
+.tablist__filter:focus {
+  background: var(--bg);
+  box-shadow: var(--ring);
+}
+.tab__end {
+  position: relative;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 1px;
 }
-.tabbar__new:hover,
-.tabbar__new--open {
+.tab__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--text-3);
+}
+.tab__close {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-3);
+  cursor: default;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+/* Clean tab: × shows on hover and on the active tab. Dirty tab: the dot holds
+   the slot until hover, then gives way to the ×. */
+.tab--active:not(.tab--dirty) .tab__close,
+.tab__close:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Hover reveals only where hover exists: on an iPad a tap first plays the
+   hover, and because it changes what the tab shows, iOS spent the first tap
+   on it — every tab took two taps to switch (iOS 27 simulator, round 2). */
+@media (hover: hover) {
+  .tab:hover .tab__close {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .tab:hover .tab__dot {
+    display: none;
+  }
+}
+.tab__close:hover {
+  background: var(--fill-2);
   color: var(--text);
-  background: var(--bg-hover);
 }
-.tabbar__new-chevron {
-  font-size: 9px;
-  line-height: 1;
-  color: var(--text-faint);
-  transform: translateY(3px);
+.tabbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+
 }
+.tabbar__btn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  cursor: default;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.tabbar__btn:hover,
+.tabbar__btn--open {
+  background: var(--fill-1);
+  color: var(--text);
+}
+.tabbar__btn:active {
+  background: var(--fill-2);
+}
+
+/* New-file dropdown behind the "+" — same §6 menu look as the context menu. */
 .newfile-menu {
   min-width: 200px;
 }
@@ -667,27 +925,61 @@ onBeforeUnmount(() => {
 }
 .newfile-menu__shortcut {
   font-size: 11px;
-  color: var(--text-faint);
+  color: var(--text-3);
 }
-.tabbar__list {
-  width: 28px;
-  padding: 0;
-  font-size: 14px;
-  color: var(--text-muted);
+
+/* §6 menu style (teleported to <body>; scoped attributes still apply). */
+.ctx-menu {
+  position: fixed;
+  z-index: var(--z-pop);
+  background: var(--bg-pop);
+  border: var(--bd-hair);
+  border-radius: var(--r-lg);
+  padding: 4px;
+  min-width: 180px;
+  box-shadow: var(--sh-pop);
+  font-family: var(--font-ui);
+  animation: tabbar-pop-in var(--dur-fast) var(--ease-out);
+  transform-origin: top left;
 }
-.tabbar__list:hover,
-.tabbar__list--open {
+@keyframes tabbar-pop-in {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  text-align: left;
+  font-size: 13px;
   color: var(--text);
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: default;
+}
+.ctx-item:hover:not(:disabled) {
+  background: var(--fill-1);
+}
+.ctx-item:disabled {
+  color: var(--text-3);
+  opacity: 0.6;
+}
+.ctx-sep {
+  height: var(--hair-w);
+  margin: 4px 6px;
+  background: var(--hairline);
 }
 .tablist {
   max-height: min(60vh, 480px);
   overflow-y: auto;
   min-width: 220px;
   max-width: 420px;
+  transform-origin: top right;
 }
 .tablist__item {
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 .tablist__name {
@@ -696,58 +988,15 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  text-align: left;
 }
 .tablist__item--active {
-  color: var(--accent);
   font-weight: 600;
 }
 .tablist__dot {
-  color: var(--accent);
-  font-size: 9px;
-}
-.tabbar__close-pane {
-  width: 32px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-}
-.tabbar__close-pane:hover {
-  color: var(--text);
-}
-.ctx-menu {
-  position: fixed;
-  z-index: var(--z-pop);
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  padding: 4px 0;
-  min-width: 140px;
-  box-shadow: var(--sh-pop);
-}
-.ctx-item {
-  display: block;
-  width: 100%;
-  padding: 6px 14px;
-  text-align: left;
-  font-size: 13px;
-  color: var(--text);
-  background: none;
-  border: none;
-  cursor: pointer;
-}
-.ctx-item:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-.ctx-item:disabled {
-  color: var(--text-faint);
-  cursor: default;
-}
-.ctx-sep {
-  height: 1px;
-  margin: 4px 8px;
-  background: var(--border);
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--text-3);
+  flex: 0 0 auto;
 }
 </style>
