@@ -1,0 +1,35 @@
+# Normalize line endings independently of each developer's core.autocrlf.
+# Without this, core.autocrlf=true on macOS/Linux checks every file out as
+# CRLF and shell scripts fail with "set: pipefail: invalid option name".
+* text=auto
+
+# Scripts must stay LF so bash/zsh can parse them on macOS, Linux and Git Bash.
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.command text eol=lf
+
+# Rust / TOML / JSON / TS / Vue / MD are all LF in the index.
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.json  text eol=lf
+*.ts    text eol=lf
+*.vue   text eol=lf
+*.md    text eol=lf
+
+# Real binaries: never touch.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.pdf   binary
+*.zip   binary
+*.dmg   binary
+*.mp4   binary
+*.wasm  binary

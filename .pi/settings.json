@@ -1,0 +1,4 @@
+{
+  "defaultProvider": "TaoToken",
+  "defaultModel": "deepseek-v4.1-flash-1017"
+}
