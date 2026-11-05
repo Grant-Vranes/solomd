@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SoloMD · drawio / excalidraw harness</title>
+<style>
+  body { font: 13px/1.5 system-ui, sans-serif; margin: 0; padding: 12px; background: #fbfaf6; color: #1f1d1a; }
+  h1 { font: 700 16px/1.3 system-ui, sans-serif; margin: 0 0 8px; }
+  #status { padding: 6px 10px; background: #fff7ec; border-left: 4px solid #ff9f40; margin: 0 0 8px; }
+  .row { display: flex; gap: 12px; }
+  .cell { flex: 1 1 0; min-width: 0; }
+  .cell h2 { font: 700 12px/1.4 system-ui, sans-serif; margin: 0 0 4px; color: #6a6560; }
+  #ex { height: 340px; border: 1px solid #e6e2d8; background: #fff; display: block; }
+  #dw { width: 100%; height: 340px; border: 1px solid #e6e2d8; background: #fff; }
+  pre { background: #f3efe7; padding: 8px; max-height: 240px; overflow: auto; }
+</style>
+</head>
+<body>
+  <h1>drawio / excalidraw harness</h1>
+  <div id="status">booting…</div>
+  <div class="row">
+    <div class="cell">
+      <h2>excalidraw (React mount)</h2>
+      <div id="ex"></div>
+    </div>
+    <div class="cell">
+      <h2>drawio (embed iframe)</h2>
+      <iframe id="dw" title="drawio"></iframe>
+    </div>
+  </div>
+  <pre id="log"></pre>
+  <script type="module" src="/src/dev/diagram-harness.ts"></script>
+</body>
+</html>
