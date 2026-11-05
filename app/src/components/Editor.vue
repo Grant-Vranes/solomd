@@ -4545,26 +4545,35 @@ function buildExtensions() {
  *  `buildExtensions()` — keep the two in sync. */
 function reconfigureCompartments() {
   if (!view) return;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Compartment.of's
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Compartment's
   // per-compartment generics don't unify into one array type cleanly.
+  // NOTE: dispatch effects must come from `Compartment.reconfigure()`, NOT
+  // `Compartment.of()`. `of()` returns a `CompartmentInstance`, which is only
+  // valid as an *initial* extension in `EditorState.create()` — putting one
+  // into `view.dispatch({ effects })` throws `effect.is is not a function`
+  // inside applyTransaction. That TypeError aborted Vue's patch mid-flush, so
+  // the whole main area froze: with several file types open (md + excalidraw
+  // + drawio + image + pdf), the first tab switch that hit this cached-state
+  // path left the previously shown pane permanently on screen — header tab
+  // clicks kept updating the strip but nothing switched anymore.
   const effects: any[] = [
-    cursorCompartment.of(drawSelection({ cursorBlinkRate: settings.solidCursor ? 0 : 1200 })),
-    activeLineCompartment.of(activeLineExtension(settings.highlightCurrentLine)),
-    lineNumCompartment.of(settings.showLineNumbers ? lineNumbers() : []),
-    wrapCompartment.of(settings.wordWrap ? EditorView.lineWrapping : []),
-    langCompartment.of(props.tab.language === 'markdown' ? [markdownExt()] : []),
-    richCompartment.of(richExtensionsFor(props.tab)),
-    themeCompartment.of(cmThemeFor(settings.theme, !!settings.customCssPath)),
-    vimCompartment.of(settings.vimMode ? vim() : []),
-    fontSizeCompartment.of(fontSizeTheme(settings.fontSize, settings.fontFamily)),
-    spellCheckCompartment.of(spellCheckExt(props.spellCheck)),
-    focusCompartment.of(props.focusMode ? focusModeExtension() : []),
-    typewriterCompartment.of(props.typewriterMode ? typewriterModeExtension() : []),
-    foldCompartment.of(foldExtensionFor(settings.foldingEnabled)),
+    cursorCompartment.reconfigure(drawSelection({ cursorBlinkRate: settings.solidCursor ? 0 : 1200 })),
+    activeLineCompartment.reconfigure(activeLineExtension(settings.highlightCurrentLine)),
+    lineNumCompartment.reconfigure(settings.showLineNumbers ? lineNumbers() : []),
+    wrapCompartment.reconfigure(settings.wordWrap ? EditorView.lineWrapping : []),
+    langCompartment.reconfigure(props.tab.language === 'markdown' ? [markdownExt()] : []),
+    richCompartment.reconfigure(richExtensionsFor(props.tab)),
+    themeCompartment.reconfigure(cmThemeFor(settings.theme, !!settings.customCssPath)),
+    vimCompartment.reconfigure(settings.vimMode ? vim() : []),
+    fontSizeCompartment.reconfigure(fontSizeTheme(settings.fontSize, settings.fontFamily)),
+    spellCheckCompartment.reconfigure(spellCheckExt(props.spellCheck)),
+    focusCompartment.reconfigure(props.focusMode ? focusModeExtension() : []),
+    typewriterCompartment.reconfigure(props.typewriterMode ? typewriterModeExtension() : []),
+    foldCompartment.reconfigure(foldExtensionFor(settings.foldingEnabled)),
   ];
   if (props.tab.language === 'markdown' && !IS_APP_STORE_BUILD) {
-    effects.push(aiKeyCompartment.of(aiRewriteExtension(currentAiRewriteKey())));
-    effects.push(slashCompartment.of(slashExt()));
+    effects.push(aiKeyCompartment.reconfigure(aiRewriteExtension(currentAiRewriteKey())));
+    effects.push(slashCompartment.reconfigure(slashExt()));
   }
   view.dispatch({ effects });
 }
