@@ -1700,6 +1700,16 @@ export const fr: I18n = {
     toggleSource: 'Basculer entre rendu / code source',
     tooLarge: 'Fichier trop volumineux pour être rendu — affichage du code source',
   },
+  pdfViewer: {
+    loading: 'Chargement du PDF…',
+    loadFailed: 'Échec du chargement du PDF',
+    prevPage: 'Page précédente',
+    nextPage: 'Page suivante',
+    zoomIn: 'Zoom avant',
+    zoomOut: 'Zoom arrière',
+    fitWidth: 'Ajuster à la largeur',
+    fit: 'Ajuster',
+  },
   drawio: {
     corruptNote: "Ce fichier n'est pas un diagramme draw.io valide — un canevas vide est affiché. Corrigez le XML ou restaurez le fichier pour récupérer votre diagramme.",
     loadError: "L'éditeur diagrams.net n'a pas pu être chargé. Vérifiez votre connexion internet et réessayez.",

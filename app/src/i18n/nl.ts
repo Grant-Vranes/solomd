@@ -1703,6 +1703,16 @@ export const nl: I18n = {
     toggleSource: 'Wissel tussen weergave / broncode',
     tooLarge: 'Bestand te groot om te renderen — broncode wordt getoond',
   },
+  pdfViewer: {
+    loading: 'PDF laden…',
+    loadFailed: 'PDF kon niet worden geladen',
+    prevPage: 'Vorige pagina',
+    nextPage: 'Volgende pagina',
+    zoomIn: 'Inzoomen',
+    zoomOut: 'Uitzoomen',
+    fitWidth: 'Aan breedte aanpassen',
+    fit: 'Aanpassen',
+  },
   drawio: {
     corruptNote: 'Dit bestand is geen geldig draw.io-diagram — er wordt een leeg canvas getoond. Repareer de XML of herstel het bestand om je diagram terug te krijgen.',
     loadError: 'De diagrams.net-editor kon niet worden geladen. Controleer je internetverbinding en probeer het opnieuw.',

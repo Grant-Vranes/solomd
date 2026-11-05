@@ -189,11 +189,11 @@ interface Settings {
   // After opening a file, point the file tree sidebar at its parent folder
   // (and reveal the sidebar if hidden). Default off.
   revealInFileTreeOnOpen: boolean;
-  // Clicking a Markdown link to a local NON-document file (e.g.
-  // `[x](./report.pdf)`) opens it with the OS default app (Typora/Obsidian
-  // style) instead of converting it to Markdown via markitdown. Applies to
-  // links only (file-tree double-click keeps converting). Default on — a
-  // link click reads as "open this file". Turn off to convert instead.
+  // Clicking a Markdown link to a local NON-document file opens it with the
+  // OS default app (Typora/Obsidian style) instead of converting it to
+  // Markdown via markitdown. Markdown / text / image / PDF links always open
+  // in-app (editor, image viewer, PdfPane). Default on — a link click reads
+  // as "open this file". Turn off to convert PPTX/EPUB/etc. instead.
   openLinkedFilesExternally: boolean;
   // First-launch welcome tour: opened automatically once. Don't reopen.
   welcomeShown: boolean;

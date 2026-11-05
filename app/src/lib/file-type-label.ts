@@ -46,6 +46,7 @@ const EXTRA_EXT_LABELS: Record<string, string> = {
   tsv: 'TSV',
   drawio: 'draw.io',
   excalidraw: 'Excalidraw',
+  pdf: 'PDF',
 };
 
 /** extension → display name, built once from `codeLanguages`. */

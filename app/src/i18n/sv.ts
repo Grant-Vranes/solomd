@@ -1703,6 +1703,16 @@ export const sv: I18n = {
     toggleSource: 'Växla mellan rendering / källkod',
     tooLarge: 'Filen är för stor för att renderas — visar källkoden',
   },
+  pdfViewer: {
+    loading: 'Läser in PDF…',
+    loadFailed: 'Kunde inte läsa in PDF',
+    prevPage: 'Föregående sida',
+    nextPage: 'Nästa sida',
+    zoomIn: 'Zooma in',
+    zoomOut: 'Zooma ut',
+    fitWidth: 'Anpassa till bredd',
+    fit: 'Anpassa',
+  },
   drawio: {
     corruptNote: 'Denna fil är inte en giltig draw.io-graf — en tom canvas visas. Fixa XML:en eller återställ filen för att återfå grafen.',
     loadError: 'diagrams.net-redigeraren kunde inte läsas in. Kontrollera din internetanslutning och försök igen.',

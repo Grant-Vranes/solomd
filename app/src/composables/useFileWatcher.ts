@@ -80,6 +80,12 @@ export function useFileWatcher(showDialog: ShowDialog) {
       encoding: result.encoding,
       hadBom: result.had_bom,
     });
+    // Binary viewer tabs don't render the tab's text content — PdfPane reads
+    // the bytes straight from disk — so it must re-fetch on its own to show
+    // the new file. Image tabs keep a static <img src>, unchanged behavior.
+    window.dispatchEvent(new CustomEvent('solomd:tab-disk-reloaded', {
+      detail: { tabId, filePath },
+    }));
   }
 
   /** A file's current bytes, normalized the way a tab stores them. */

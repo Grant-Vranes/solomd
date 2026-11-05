@@ -1700,6 +1700,16 @@ export const ja: I18n = {
     toggleSource: 'レンダリング表示 / ソースコードを切り替え',
     tooLarge: 'ファイルが大きすぎてレンダリングできません — ソースを表示しています',
   },
+  pdfViewer: {
+    loading: 'PDF を読み込み中…',
+    loadFailed: 'PDF の読み込みに失敗しました',
+    prevPage: '前のページ',
+    nextPage: '次のページ',
+    zoomIn: '拡大',
+    zoomOut: '縮小',
+    fitWidth: '幅に合わせる',
+    fit: '合わせる',
+  },
   drawio: {
     corruptNote: 'このファイルは有効な draw.io 図ではないため、空白キャンバスを表示しています。図を復元するには XML を修正するかファイルを元に戻してください。',
     loadError: 'diagrams.net エディターを読み込めませんでした。インターネット接続を確認して再試行してください。',

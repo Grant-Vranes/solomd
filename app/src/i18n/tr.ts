@@ -1703,6 +1703,16 @@ export const tr: I18n = {
     toggleSource: 'İşlenmiş görünüm / kaynak kodu arasında geçiş yap',
     tooLarge: 'Dosya işlenemeyecek kadar büyük — kaynak kod gösteriliyor',
   },
+  pdfViewer: {
+    loading: 'PDF yükleniyor…',
+    loadFailed: 'PDF yüklenemedi',
+    prevPage: 'Önceki sayfa',
+    nextPage: 'Sonraki sayfa',
+    zoomIn: 'Yakınlaştır',
+    zoomOut: 'Uzaklaştır',
+    fitWidth: 'Genişliğe sığdır',
+    fit: 'Sığdır',
+  },
   drawio: {
     corruptNote: 'Bu dosya geçerli bir draw.io şeması değil — boş bir tuval gösteriliyor. Şemanızı kurtarmak için XML’i düzeltin veya dosyayı geri yükleyin.',
     loadError: 'diagrams.net editörü yüklenemedi. İnternet bağlantınızı kontrol edip tekrar deneyin.',

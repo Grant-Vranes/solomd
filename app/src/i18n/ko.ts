@@ -1700,6 +1700,16 @@ export const ko: I18n = {
     toggleSource: '렌더링 보기 / 소스 코드 전환',
     tooLarge: '파일이 너무 커서 렌더링할 수 없습니다 — 소스를 표시합니다',
   },
+  pdfViewer: {
+    loading: 'PDF 불러오는 중…',
+    loadFailed: 'PDF를 불러오지 못했습니다',
+    prevPage: '이전 페이지',
+    nextPage: '다음 페이지',
+    zoomIn: '확대',
+    zoomOut: '축소',
+    fitWidth: '너비에 맞추기',
+    fit: '맞추기',
+  },
   drawio: {
     corruptNote: '이 파일은 유효한 draw.io 다이어그램이 아닙니다 — 빈 캔버스가 표시됩니다. 다이어그램을 복구하려면 XML을 수정하거나 파일을 복원하세요.',
     loadError: 'diagrams.net 편집기를 로드하지 못했습니다. 인터넷 연결을 확인하고 다시 시도하세요.',

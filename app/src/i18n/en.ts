@@ -663,7 +663,7 @@ export const en = {
     revealInFileTreeOnOpen: 'Reveal file in file tree on open',
     revealInFileTreeOnOpenHint: "When on, opening a file points the file tree at its parent folder. A hidden file tree stays hidden.",
     openLinkedFilesExternally: 'Open linked files with the system default app',
-    openLinkedFilesExternallyHint: 'When on, clicking a Markdown link to a local PDF / Office / other document opens it in the OS default app. Turn off to convert it to Markdown instead. Links to .md / text / images always open inside SoloMD.',
+    openLinkedFilesExternallyHint: 'When on, clicking a Markdown link to a local Office / audio / other document opens it in the OS default app. Turn off to convert it to Markdown instead. Links to .md / text / images / PDFs always open inside SoloMD.',
     autoCheckUpdate: 'Automatically check for updates',
     checkUpdate: 'Check for updates now',
     checkingUpdate: 'Checking…',
@@ -1712,6 +1712,16 @@ export const en = {
   html: {
     toggleSource: 'Toggle rendered view / source code',
     tooLarge: 'File too large to render — showing source',
+  },
+  pdfViewer: {
+    loading: 'Loading PDF…',
+    loadFailed: 'PDF failed to load',
+    prevPage: 'Previous page',
+    nextPage: 'Next page',
+    zoomIn: 'Zoom in',
+    zoomOut: 'Zoom out',
+    fitWidth: 'Fit width',
+    fit: 'Fit',
   },
   drawio: {
     corruptNote: 'This file is not a valid draw.io diagram — showing a blank canvas. Fix the XML or restore the file to recover your diagram.',

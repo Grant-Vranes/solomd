@@ -361,9 +361,34 @@ function onPointerUp(e: PointerEvent) {
 // #106), but its scrollbar is hidden, so nothing says so — "根本没办法切换，
 // 显示不全". While the strip overflows, a "⌄" button lists every open tab.
 const tabsOverflow = ref(false);
+// Hidden-tab counters (#hidden tabs fully scrolled out at each edge). Shown
+// as small count pills on the strip's left/right edge so an overflowing bar
+// makes clear how many tabs are off-screen in each direction.
+const hiddenLeft = ref(0);
+const hiddenRight = ref(0);
+function measureHiddenTabs() {
+  const el = tabsEl.value;
+  if (!el) {
+    hiddenLeft.value = 0;
+    hiddenRight.value = 0;
+    return;
+  }
+  const sl = el.scrollLeft;
+  const visibleRight = sl + el.clientWidth;
+  let left = 0;
+  let right = 0;
+  for (const te of Array.from(el.querySelectorAll<HTMLElement>('.tab'))) {
+    const end = te.offsetLeft + te.offsetWidth;
+    if (end <= sl + 1) left++;
+    else if (te.offsetLeft >= visibleRight - 1) right++;
+  }
+  hiddenLeft.value = left;
+  hiddenRight.value = right;
+}
 function measureTabsOverflow() {
   const el = tabsEl.value;
   tabsOverflow.value = !!el && el.scrollWidth > el.clientWidth + 1;
+  measureHiddenTabs();
 }
 let tabsRO: ResizeObserver | null = null;
 // Startup: no synchronous scrollWidth read in onMounted — that forced a
@@ -446,6 +471,46 @@ function onTabsWheel(e: WheelEvent) {
   el.scrollLeft += delta;
 }
 
+// ---- Edge count pills: how many tabs are hidden at each end ----
+// Recomputed on every scroll of the strip (wheel, drag-pan, touch, and
+// scrollIntoView all fire `scroll`).
+function onTabsScroll() {
+  measureHiddenTabs();
+}
+// Clicking a pill reveals the tabs behind it: scroll the strip just far
+// enough to fully show the tab currently cut off at that edge (scrolling
+// fires `scroll`, which re-runs the count).
+function revealHidden(dir: 'left' | 'right') {
+  const el = tabsEl.value;
+  if (!el) return;
+  const tabEls = Array.from(el.querySelectorAll<HTMLElement>('.tab'));
+  if (dir === 'left') {
+    const sl = el.scrollLeft;
+    const target = tabEls.find((te) => te.offsetLeft < sl && te.offsetLeft + te.offsetWidth > sl);
+    if (target) el.scrollTo({ left: target.offsetLeft, behavior: 'smooth' });
+  } else {
+    const edge = el.scrollLeft + el.clientWidth;
+    for (let i = tabEls.length - 1; i >= 0; i--) {
+      const te = tabEls[i]!;
+      if (te.offsetLeft + te.offsetWidth <= edge) continue;
+      if (te.offsetLeft < edge) {
+        el.scrollTo({ left: te.offsetLeft + te.offsetWidth - el.clientWidth, behavior: 'smooth' });
+        break;
+      }
+    }
+  }
+}
+const hiddenLeftTitle = computed(() =>
+  settings.language === 'zh'
+    ? `左侧还有 ${hiddenLeft.value} 个标签页`
+    : `${hiddenLeft.value} more tab${hiddenLeft.value === 1 ? '' : 's'} on the left`,
+);
+const hiddenRightTitle = computed(() =>
+  settings.language === 'zh'
+    ? `右侧还有 ${hiddenRight.value} 个标签页`
+    : `${hiddenRight.value} more tab${hiddenRight.value === 1 ? '' : 's'} on the right`,
+);
+
 // ---- Middle-button: drag-to-pan, or close on a clean click (#106) ----
 // #89 added middle-click-to-close. To also restore middle-drag panning we
 // distinguish the two: motion past DRAG_THRESHOLD pans the strip and cancels
@@ -508,7 +573,8 @@ onBeforeUnmount(() => {
     :class="`pane-tabbar--${placement}`"
     :data-tauri-drag-region="placement === 'header' ? '' : undefined"
   >
-    <div class="tabs" ref="tabsEl" @wheel.prevent="onTabsWheel">
+    <div class="tabs-wrap">
+    <div class="tabs" ref="tabsEl" @wheel.prevent="onTabsWheel" @scroll.passive="onTabsScroll">
       <!-- The loop variable is `tab`, not `t`: `t` is the i18n function in
            this component, and `v-for="t in …"` silently shadowed it — any
            `t('key')` written inside the row would have called the tab. -->
@@ -548,6 +614,27 @@ onBeforeUnmount(() => {
           </button>
         </span>
       </div>
+    </div>
+    <!-- Edge pills: only while tabs are fully hidden beyond that edge.
+         Clicking reveals the tab cut off at that edge. -->
+    <button
+      v-if="hiddenLeft > 0"
+      class="tabs__edge tabs__edge--left"
+      :title="hiddenLeftTitle"
+      :aria-label="hiddenLeftTitle"
+      @click.stop="revealHidden('left')"
+    >
+      <Icon name="chevron-left" :size="12" /><span>{{ hiddenLeft }}</span>
+    </button>
+    <button
+      v-if="hiddenRight > 0"
+      class="tabs__edge tabs__edge--right"
+      :title="hiddenRightTitle"
+      :aria-label="hiddenRightTitle"
+      @click.stop="revealHidden('right')"
+    >
+      <span>{{ hiddenRight }}</span><Icon name="chevron-right" :size="12" />
+    </button>
     </div>
     <div class="tabbar__actions">
       <button
@@ -726,11 +813,18 @@ onBeforeUnmount(() => {
   background: transparent;
   flex: 1 1 auto;
 }
+.tabs-wrap {
+  position: relative;
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 100%;
+}
 .tabs {
   display: flex;
   align-items: center;
   gap: 2px;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   height: 100%;
 
@@ -741,6 +835,36 @@ onBeforeUnmount(() => {
   touch-action: pan-x;
 }
 .tabs::-webkit-scrollbar { display: none; }
+/* Count pills on the strip's edges — how many tabs are hidden beyond each
+   side of an overflowing bar. Small, translucent, out of the way. */
+.tabs__edge {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.14);
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.tabs__edge--left { left: 2px; }
+.tabs__edge--right { right: 2px; }
+.tabs__edge:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
 .tabs__filler {
   flex: 1 1 0;
   min-width: 0;

@@ -6,7 +6,9 @@ import ExcalidrawPane from './ExcalidrawPane.vue';
 import DrawioPane from './DrawioPane.vue';
 import HtmlPane from './HtmlPane.vue';
 import ImagePane from './ImagePane.vue';
+import PdfPane from './PdfPane.vue';
 import { isImageFileName } from '../lib/image-file';
+import { isPdfName } from '../lib/pdf-file';
 import { isExcalidrawName } from '../lib/excalidraw-scene';
 import { isDrawioName } from '../lib/drawio';
 import { isHtmlName, shouldAutoRenderHtml, loadHtmlViewMode, saveHtmlViewMode } from '../lib/html-doc';
@@ -57,6 +59,10 @@ const isHtmlTab = computed(() => isHtmlName(props.tab?.fileName) || isHtmlName(p
 // Image files (png/jpg/webp/svg/…) open as a real tab — they appear in the
 // TabBar like any file — but render in a zoom/pan viewer, not the editor.
 const isImageTab = computed(() => isImageFileName(props.tab?.fileName) || isImageFileName(props.tab?.filePath));
+
+// PDF files open as a real tab too, rendered by PdfPane (pdf.js) instead of
+// the editor / the old markitdown conversion.
+const isPdfTab = computed(() => isPdfName(props.tab?.fileName) || isPdfName(props.tab?.filePath));
 const htmlRenderEligible = computed(() => isHtmlTab.value && shouldAutoRenderHtml(props.tab?.content || ''));
 const htmlShowSource = computed(() => {
   if (!isHtmlTab.value) return false;
@@ -80,6 +86,7 @@ const showEditor = computed(
     !isExcalidrawTab.value &&
     !isDrawioTab.value &&
     !isImageTab.value &&
+    !isPdfTab.value &&
     !isHtmlTab.value && // HTML tabs render via the pane--html block below
     (props.tab?.language !== 'markdown' || settings.viewMode !== 'preview')
 );
@@ -798,6 +805,10 @@ function onPreviewSearchEvent(e: Event) {
     <div class="pane pane--image" v-if="isImageTab && tab">
       <ImagePane :key="tab.id" :tab-id="tab.id" />
     </div>
+    <!-- PDF files render as a pdf.js viewer tab (see PdfPane). -->
+    <div class="pane pane--pdf" v-if="isPdfTab && tab">
+      <PdfPane :key="tab.id" :tab-id="tab.id" />
+    </div>
     <!-- .html/.htm files render in a sandboxed iframe (like horseMD), with a
        render/source toggle button in the pane's top-right corner. -->
     <div class="pane pane--html" v-if="isHtmlTab && tab" :class="{ 'pane--html-source': htmlShowSource }">
@@ -895,6 +906,9 @@ function onPreviewSearchEvent(e: Event) {
   display: flex;
 }
 .pane--image {
+  display: flex;
+}
+.pane--pdf {
   display: flex;
 }
 .pane--html {

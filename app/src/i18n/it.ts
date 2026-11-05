@@ -1700,6 +1700,16 @@ export const it: I18n = {
     toggleSource: 'Alterna vista renderizzata / codice sorgente',
     tooLarge: 'File troppo grande per il rendering — mostro il codice sorgente',
   },
+  pdfViewer: {
+    loading: 'Caricamento PDF…',
+    loadFailed: 'Caricamento del PDF non riuscito',
+    prevPage: 'Pagina precedente',
+    nextPage: 'Pagina successiva',
+    zoomIn: 'Zoom avanti',
+    zoomOut: 'Zoom indietro',
+    fitWidth: 'Adatta alla larghezza',
+    fit: 'Adatta',
+  },
   drawio: {
     corruptNote: 'Questo file non è un diagramma draw.io valido — viene mostrata una tela vuota. Correggi l\'XML o ripristina il file per recuperare il diagramma.',
     loadError: 'Impossibile caricare l\'editor diagrams.net. Controlla la connessione a internet e riprova.',

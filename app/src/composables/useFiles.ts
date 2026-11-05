@@ -156,10 +156,18 @@ export function useFiles() {
   // #98 — image extensions were removed from here: clicking an image in the
   // FileTree used to run it through the markitdown OCR converter (which fails
   // and toasts an error). Images now open in the fullscreen viewer instead.
+  // `pdf` was removed too: a PDF now opens in the built-in PdfPane viewer
+  // (pdf.js) instead of converting. Import-to-Markdown still exists via
+  // File → Import Documents (importDocuments below), whose own extension
+  // list still contains pdf.
   const CONVERT_CLI = new Set([
-    'pdf', 'pptx', 'epub',
+    'pptx', 'epub',
     'mp3', 'wav', 'm4a', 'ogg', 'flac',
   ]);
+
+  // PDF files open as a real tab (TabBar entry + PdfPane viewer) —
+  // see lib/pdf-file.ts.
+  const PDF_EXTENSIONS = new Set(['pdf']);
 
   // #98 → image files now open as a real TAB (TabBar entry + ImagePane
   // zoom/pan viewer) instead of the fullscreen overlay — see lib/image-file.ts.
@@ -192,6 +200,7 @@ export function useFiles() {
     ...IMAGE_EXTENSIONS,
     ...CONVERT_BUILTIN,
     ...CONVERT_CLI,
+    ...PDF_EXTENSIONS,
   ]);
 
   // #98 — open an image file as a document tab rendered by ImagePane
@@ -211,6 +220,24 @@ export function useFiles() {
     workspace.pushRecent(path);
     // 5.0 §8 — the phone shell moves to its editor screen on this (opening a
     // note that is already the active tab changes no store state).
+    window.dispatchEvent(new CustomEvent('solomd:file-opened', { detail: { path } }));
+    toasts.success(t('toast.openedFile', { name: fileName }));
+  }
+
+  // PDF files open as a document tab rendered by PdfPane (pdf.js viewer),
+  // replacing the old markitdown conversion on open. Same contract as
+  // openImageFile: empty content keeps the tab permanently clean so no save
+  // path can ever clobber the PDF bytes.
+  async function openPdfFile(path: string) {
+    const fileName = path.split(/[\\/]/).pop() ?? path;
+    tabs.openFromDisk({
+      filePath: path,
+      content: '',
+      encoding: 'UTF-8',
+      language: 'plaintext',
+      hadBom: false,
+    });
+    workspace.pushRecent(path);
     window.dispatchEvent(new CustomEvent('solomd:file-opened', { detail: { path } }));
     toasts.success(t('toast.openedFile', { name: fileName }));
   }
@@ -327,6 +354,12 @@ export function useFiles() {
       return openImageFile(path);
     }
 
+    // PDFs open as a viewer tab (PdfPane) instead of converting to Markdown.
+    // Import-to-Markdown remains available via File → Import Documents.
+    if (PDF_EXTENSIONS.has(imgExt)) {
+      return openPdfFile(path);
+    }
+
     // Spawn a new Tauri window with the path in the query string when the
     // user has opted in. Only applies when the current window already has
     // at least one tab (fresh-launch first file should stay in this window).
@@ -438,10 +471,10 @@ export function useFiles() {
    * tree). When `openLinkedFilesExternally` is on, a link to a non-text,
    * non-image document (PDF, Office, audio, archives, unknown binaries) is
    * handed to the OS default app — matching the "click the link to open the
-   * file" intuition users have from Typora / Obsidian. Markdown / text / code
-   * and images always stay inside SoloMD (editor tab / image overlay). When
-   * the setting is off, everything routes through `openPath` as before
-   * (PDF/PPTX/EPUB → markitdown conversion).
+   * file" intuition users have from Typora / Obsidian. Markdown / text / code,
+   * images and PDFs always stay inside SoloMD (editor tab / image overlay /
+   * PdfPane viewer). When the setting is off, everything routes through
+   * `openPath` as before (PPTX/EPUB → markitdown conversion, PDF → PdfPane).
    */
   async function openLinkedFile(
     path: string,
@@ -450,7 +483,8 @@ export function useFiles() {
     const ext = (path.split('.').pop() || '').toLowerCase();
     const isImage = IMAGE_EXTENSIONS.has(ext);
     const isTextLike = TEXT_LINK_EXTENSIONS.has(ext);
-    if (settings.openLinkedFilesExternally && !isImage && !isTextLike) {
+    const isPdf = PDF_EXTENSIONS.has(ext);
+    if (settings.openLinkedFilesExternally && !isImage && !isTextLike && !isPdf) {
       if (import.meta.env.DEV) {
         (window as unknown as { __lastLinkOpen?: unknown }).__lastLinkOpen = {
           mode: 'external',

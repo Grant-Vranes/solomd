@@ -1700,6 +1700,16 @@ export const de: I18n = {
     toggleSource: 'Umschalten zwischen gerenderter Ansicht / Quellcode',
     tooLarge: 'Datei zu groß zum Rendern — Quellcode wird angezeigt',
   },
+  pdfViewer: {
+    loading: 'PDF wird geladen…',
+    loadFailed: 'PDF konnte nicht geladen werden',
+    prevPage: 'Vorherige Seite',
+    nextPage: 'Nächste Seite',
+    zoomIn: 'Vergrößern',
+    zoomOut: 'Verkleinern',
+    fitWidth: 'Breite einpassen',
+    fit: 'Einpassen',
+  },
   drawio: {
     corruptNote: 'Diese Datei ist keine gültige draw.io-Zeichnung — eine leere Leinwand wird angezeigt. Repariere das XML oder stelle die Datei wieder her, um das Diagramm zurückzugewinnen.',
     loadError: 'Der diagrams.net-Editor konnte nicht geladen werden. Prüfe die Internetverbindung und versuche es erneut.',

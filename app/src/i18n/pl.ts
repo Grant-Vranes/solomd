@@ -1703,6 +1703,16 @@ export const pl: I18n = {
     toggleSource: 'Przełącz podgląd / kod źródłowy',
     tooLarge: 'Plik zbyt duży do renderowania — pokazuję kod źródłowy',
   },
+  pdfViewer: {
+    loading: 'Wczytywanie PDF…',
+    loadFailed: 'Nie udało się wczytać pliku PDF',
+    prevPage: 'Poprzednia strona',
+    nextPage: 'Następna strona',
+    zoomIn: 'Powiększ',
+    zoomOut: 'Pomniejsz',
+    fitWidth: 'Dopasuj do szerokości',
+    fit: 'Dopasuj',
+  },
   drawio: {
     corruptNote: 'Ten plik nie jest prawidłowym diagramem draw.io — wyświetlana jest pusta kanwa. Napraw plik XML lub przywróć plik, aby odzyskać diagram.',
     loadError: 'Nie udało się wczytać edytora diagrams.net. Sprawdź połączenie internetowe i spróbuj ponownie.',

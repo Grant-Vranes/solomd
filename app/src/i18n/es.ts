@@ -1700,6 +1700,16 @@ export const es: I18n = {
     toggleSource: 'Alternar vista renderizada / código fuente',
     tooLarge: 'Archivo demasiado grande para renderizar: mostrando el código fuente',
   },
+  pdfViewer: {
+    loading: 'Cargando PDF…',
+    loadFailed: 'No se pudo cargar el PDF',
+    prevPage: 'Página anterior',
+    nextPage: 'Página siguiente',
+    zoomIn: 'Acercar',
+    zoomOut: 'Alejar',
+    fitWidth: 'Ajustar al ancho',
+    fit: 'Ajustar',
+  },
   drawio: {
     corruptNote: 'Este archivo no es un diagrama draw.io válido — se muestra un lienzo vacío. Corrige el XML o restaura el archivo para recuperar tu diagrama.',
     loadError: 'No se pudo cargar el editor diagrams.net. Comprueba tu conexión a internet e inténtalo de nuevo.',

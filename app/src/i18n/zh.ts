@@ -662,7 +662,7 @@ export const zh: I18n = {
     revealInFileTreeOnOpen: '打开文件后自动切到所在文件夹',
     revealInFileTreeOnOpenHint: "开启后，打开文件会自动把左侧文件树定位到文件所在文件夹；文件树已隐藏时保持隐藏。",
     openLinkedFilesExternally: '用默认程序打开链接的文件',
-    openLinkedFilesExternallyHint: '开启后，点击 Markdown 里指向本地 PDF / Office / 其他文档的链接，会用系统默认程序打开；关闭则转换成 Markdown 打开。指向 .md / 文本 / 图片的链接始终在 SoloMD 内打开。',
+    openLinkedFilesExternallyHint: '开启后，点击 Markdown 里指向本地 Office / 音频 / 其他文档的链接，会用系统默认程序打开；关闭则转换成 Markdown 打开。指向 .md / 文本 / 图片 / PDF 的链接始终在 SoloMD 内打开。',
     autoCheckUpdate: '自动检查更新',
     checkUpdate: '立即检查更新',
     checkingUpdate: '检查中…',
@@ -1696,6 +1696,16 @@ export const zh: I18n = {
   html: {
     toggleSource: '切换渲染视图 / 源码',
     tooLarge: '文件过大，无法渲染 —— 已显示源码',
+  },
+  pdfViewer: {
+    loading: '正在加载 PDF…',
+    loadFailed: 'PDF 加载失败',
+    prevPage: '上一页',
+    nextPage: '下一页',
+    zoomIn: '放大',
+    zoomOut: '缩小',
+    fitWidth: '适应宽度',
+    fit: '适应',
   },
   drawio: {
     corruptNote: '这不是有效的 draw.io 图表文件 —— 已显示空白画布。请修复 XML 或还原文件以找回图表。',

@@ -1702,6 +1702,16 @@ export const pt: I18n = {
     toggleSource: 'Alternar entre visualização / código-fonte',
     tooLarge: 'Arquivo grande demais para renderizar — exibindo o código-fonte',
   },
+  pdfViewer: {
+    loading: 'Carregando PDF…',
+    loadFailed: 'Falha ao carregar o PDF',
+    prevPage: 'Página anterior',
+    nextPage: 'Próxima página',
+    zoomIn: 'Ampliar',
+    zoomOut: 'Reduzir',
+    fitWidth: 'Ajustar à largura',
+    fit: 'Ajustar',
+  },
   drawio: {
     corruptNote: 'Este arquivo não é um diagrama draw.io válido — uma tela em branco é exibida. Corrija o XML ou restaure o arquivo para recuperar o diagrama.',
     loadError: 'Não foi possível carregar o editor diagrams.net. Verifique sua conexão com a internet e tente novamente.',
