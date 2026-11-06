@@ -4538,6 +4538,40 @@ function buildExtensions() {
   ];
 }
 
+/** Fingerprint of everything `buildExtensions()` derives from *settings* (as
+ *  opposed to the document). A cached per-tab `EditorState` froze the extension
+ *  set that was live when the tab was last active, so a restore only has to
+ *  re-apply compartments when this changed. When it didn't — the common case:
+ *  the user is just clicking through tabs — the parsed Markdown tree, the
+ *  live-block widgets and the parser instance all survive the switch instead of
+ *  being rebuilt for the whole document on every click. */
+function compartmentSignature(tab: Tab): string {
+  return [
+    settings.solidCursor ? 1 : 0,
+    settings.highlightCurrentLine ? 1 : 0,
+    settings.showLineNumbers ? 1 : 0,
+    settings.wordWrap ? 1 : 0,
+    settings.theme,
+    settings.customCssPath || '',
+    settings.vimMode ? 1 : 0,
+    settings.fontSize,
+    settings.fontFamily || '',
+    props.spellCheck ? 1 : 0,
+    props.focusMode ? 1 : 0,
+    props.typewriterMode ? 1 : 0,
+    settings.foldingEnabled ? 1 : 0,
+    // Both change the *shape* of the rich bundle (live-preview on/off, and
+    // whether markers / task-list + wikilink widgets are included at all),
+    // so they need a rebuild rather than a getter that reads them at render
+    // time like the mermaid / PlantUML options do.
+    settings.livePreview ? 1 : 0,
+    settings.alwaysShowMarkers ? 1 : 0,
+    activeEditorViewMode.value,
+    tab.language,
+    IS_APP_STORE_BUILD ? '' : currentAiRewriteKey(),
+  ].join('\u0000');
+}
+
 /** Re-apply every settings-driven compartment to the current view. Used
  *  after restoring a cached per-tab `EditorState`: that state froze the
  *  extension set captured when the tab was last active, and settings (theme,
@@ -5506,7 +5540,10 @@ function restoreCodeMirrorScroll(saved?: TabCaretSnapshot) {
 // and the selection intact, so switching back to a tab restores it verbatim
 // instead of feeling like a fresh load. Bounded (oldest evicted) because each
 // entry pins a full document string.
-const tabStateMemory = new Map<string, { state: EditorState; scrollTop: number }>();
+const tabStateMemory = new Map<
+  string,
+  { state: EditorState; scrollTop: number; sig: string }
+>();
 const TAB_STATE_MEMORY_LIMIT = 50;
 
 // #169 (Windows) — one synchronous scrollTop assignment is not enough on the
@@ -5629,16 +5666,28 @@ watch(
         const oldest = tabStateMemory.keys().next().value;
         if (oldest !== undefined) tabStateMemory.delete(oldest);
       }
-      tabStateMemory.set(oldId, { state: view.state, scrollTop: view.scrollDOM.scrollTop });
+      const outgoing = tabs.tabs.find((x) => x.id === oldId);
+      tabStateMemory.set(oldId, {
+        state: view.state,
+        scrollTop: view.scrollDOM.scrollTop,
+        // The live view always reflects the current settings (each settings
+        // watcher reconfigures it in place), so the fingerprint taken now is
+        // the one this state's extension set was built against. It is taken for
+        // the OUTGOING tab: `props.tab` is already the incoming one by the time
+        // this watcher runs, and its language is part of the fingerprint.
+        sig: compartmentSignature(outgoing ?? props.tab),
+      });
     }
     const cached = newId ? tabStateMemory.get(newId) : undefined;
     if (cached && cached.state.doc.toString() === props.tab.content) {
       // Fast path: the cached state still matches the store's content —
       // restore it wholesale. No re-parse, history and folds survive.
       view.setState(cached.state);
-      // The cached state froze the extension set from when this tab was
-      // last active; re-apply current settings-driven compartments.
-      reconfigureCompartments();
+      // Only when a settings-driven extension actually changed since this tab
+      // was cached: re-applying them unconditionally rebuilt the Markdown
+      // language (full re-parse) and the live-edit block decorations (a walk
+      // over every line of the document) on every single tab switch.
+      if (cached.sig !== compartmentSignature(props.tab)) reconfigureCompartments();
       maybeRestoreSession();
       const st = cached.scrollTop;
       view.scrollDOM.scrollTop = st;

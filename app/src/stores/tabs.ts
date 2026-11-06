@@ -17,6 +17,32 @@ const LS_KEY = 'solomd.tabs.v1';
 const LS_BUCKET_PREFIX = 'solomd.tabs.v1::';
 const NO_WORKSPACE = '__none__';
 
+// ---- v2 storage layout (per-document text keys) -------------------------
+//
+// The bucket used to hold every open document's text twice (`content` +
+// `savedContent`), so each `persist()` was a JSON.stringify + localStorage
+// write whose cost grew with (open tabs x document size). Since persist() runs
+// on every tab switch, every keystroke (App.vue's watcher) and every caret move
+// (setCursor), a session with a dozen notes was re-writing several megabytes
+// of text to storage for a single click on a tab — the "switching between
+// files is very laggy" report.
+//
+// v2 keeps the bucket as metadata only and stores each document's text under
+// `solomd.tabtext.v1::<tabId>`. Consequences:
+//   * `persist()` (switching, carets, keystrokes) writes a few KB of metadata,
+//     and is skipped entirely when nothing changed since the last write.
+//   * A changed document's text is written on its own — one tab, not all of
+//     them — and coalesced over a short window so a burst of typing or a run
+//     of tab switches costs one write (flushed on hide / unload).
+//   * Quota pressure drops by ~half: a clean tab stores its text once, and the
+//     redundant `savedContent` copy is only kept for tabs with unsaved edits.
+const TEXT_PREFIX = 'solomd.tabtext.v1::';
+const BUCKET_VERSION = 2;
+/** Debounce for document-text writes. Metadata is always written eagerly —
+ *  it is tiny — but text is what makes a write expensive, so it waits for a
+ *  pause and flushes on hide/unload. */
+const TEXT_WRITE_DELAY = 500;
+
 // #103 — auxiliary windows ("Open file in new window") get their own tab
 // bucket so multiple windows on the same folder don't clobber each other's
 // open tabs. The main window keeps the un-suffixed keys above (backward
@@ -125,25 +151,183 @@ function inFolder(filePath: string | undefined, folder: string | null): boolean 
   return f === r || f.startsWith(r + '/');
 }
 
+/** One tab as stored in v2: everything except the document text. */
+type StoredTabMeta = Omit<Tab, 'content' | 'savedContent'>;
+interface StoredBucket {
+  v?: number;
+  tabs: StoredTabMeta[];
+  activeId: string;
+}
+
+function textKey(tabId: string): string {
+  return TEXT_PREFIX + tabId;
+}
+
+function normalizeEol(s: string): string {
+  return s.includes('\r\n') ? s.replace(/\r\n/g, '\n') : s;
+}
+
+/** Document text writes waiting for the debounce to expire. */
+const pendingText = new Map<string, { c: string; s: string | null }>();
+let textTimer: ReturnType<typeof setTimeout> | null = null;
+/** What storage currently holds per tab id — so an unchanged document is never
+ *  rewritten, and a restored session does not re-save every open document on
+ *  the first persist(). */
+const writtenText = new Map<string, { c: string; s: string }>();
+/** Last payload written per bucket key — lets a no-op persist() (active tab
+ *  switched back and forth, caret-only change) skip the write entirely. */
+const writtenBucket = new Map<string, string>();
+
+/** Write every queued document text now. Also called on hide / pagehide so a
+ *  quit or a window close never loses the last few hundred milliseconds. */
+export function flushTabText(): void {
+  if (textTimer) {
+    clearTimeout(textTimer);
+    textTimer = null;
+  }
+  if (pendingText.size === 0) return;
+  for (const [id, rec] of pendingText) {
+    try {
+      localStorage.setItem(textKey(id), JSON.stringify(rec));
+    } catch {
+      // Quota — drop the text (the session-restore snapshot and the on-disk
+      // file are the remaining copies) rather than wedging the editor.
+    }
+    writtenText.set(id, { c: rec.c, s: rec.s ?? rec.c });
+  }
+  pendingText.clear();
+}
+
+function readTabText(tabId: string): { content: string; savedContent: string } | null {
+  try {
+    const raw = localStorage.getItem(textKey(tabId));
+    if (!raw) return null;
+    const rec = JSON.parse(raw) as { c?: string; s?: string | null };
+    if (typeof rec.c !== 'string') return null;
+    const content = normalizeEol(rec.c);
+    return {
+      content,
+      savedContent: typeof rec.s === 'string' ? normalizeEol(rec.s) : content,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Queue (or immediately write) this tab's text if it differs from what
+ *  storage already holds. */
+function queueTabText(t: Tab, now = false): void {
+  const prev = writtenText.get(t.id);
+  if (prev && prev.c === t.content && prev.s === t.savedContent) return;
+  const rec = { c: t.content, s: t.content === t.savedContent ? null : t.savedContent };
+  if (now) {
+    try {
+      localStorage.setItem(textKey(t.id), JSON.stringify(rec));
+    } catch {}
+    writtenText.set(t.id, { c: t.content, s: t.savedContent });
+    pendingText.delete(t.id);
+    return;
+  }
+  pendingText.set(t.id, rec);
+  if (!textTimer) textTimer = setTimeout(flushTabText, TEXT_WRITE_DELAY);
+}
+
+/** Serialize a bucket: metadata only, queueing each tab's text write. */
+function serializeBucket(tabs: Tab[], activeId: string, flushTextNow: boolean): string {
+  const metas: StoredTabMeta[] = tabs.map((t) => {
+    queueTabText(t, flushTextNow);
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- dropping the
+    // text from the metadata is the whole point of the v2 layout.
+    const { content, savedContent, ...meta } = t;
+    return { ...meta } as StoredTabMeta;
+  });
+  return JSON.stringify({ v: BUCKET_VERSION, activeId, tabs: metas });
+}
+
 function readBucket(key: string): PersistedState | null {
   try {
     const raw = localStorage.getItem(key);
-    if (raw) {
-      const data = JSON.parse(raw) as PersistedState;
-      if (Array.isArray(data.tabs)) {
-        for (const t of data.tabs) {
-          if (typeof t.content === 'string' && t.content.includes('\r\n')) {
-            t.content = t.content.replace(/\r\n/g, '\n');
-          }
-          if (typeof t.savedContent === 'string' && t.savedContent.includes('\r\n')) {
-            t.savedContent = t.savedContent.replace(/\r\n/g, '\n');
-          }
-        }
-        return { tabs: data.tabs, activeId: data.activeId || '' };
+    if (!raw) return null;
+    const data = JSON.parse(raw) as StoredBucket & { tabs: Array<StoredTabMeta & Partial<Tab>> };
+    if (!Array.isArray(data.tabs)) return null;
+    const tabs: Tab[] = [];
+    for (const stored of data.tabs) {
+      if (data.v === BUCKET_VERSION) {
+        // Text lives in its own key. A missing record (evicted by quota, or a
+        // tab that never got written) restores as an empty buffer — a clean
+        // file-backed tab is then re-read from disk by the startup revalidate,
+        // which is exactly the pre-v2 behaviour for a lost session snapshot.
+        const text = readTabText(stored.id);
+        const content = text?.content ?? '';
+        const savedContent = text?.savedContent ?? '';
+        writtenText.set(stored.id, { c: content, s: savedContent });
+        tabs.push({ ...(stored as StoredTabMeta), content, savedContent } as Tab);
+      } else {
+        // v1 (pre-v2): the text was stored inline in the bucket. Adopt it; the
+        // next persist() rewrites the bucket in the new layout. `writtenText`
+        // is deliberately NOT seeded here — the text has no per-tab key yet, so
+        // the next persist has to write one.
+        const content = normalizeEol(typeof stored.content === 'string' ? stored.content : '');
+        const savedContent = normalizeEol(
+          typeof stored.savedContent === 'string' ? stored.savedContent : content,
+        );
+        tabs.push({ ...(stored as StoredTabMeta), content, savedContent } as Tab);
       }
     }
+    return { tabs, activeId: data.activeId || '' };
   } catch {}
   return null;
+}
+
+/** Every tab-bucket key this window can see (its own + other workspaces + other
+ *  windows). Buckets are metadata only now, so parsing them is cheap. */
+function bucketKeys(): string[] {
+  const out: string[] = [LS_KEY];
+  try {
+    const len = localStorage.length;
+    for (let i = 0; i < len; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(LS_BUCKET_PREFIX)) out.push(k);
+    }
+  } catch {}
+  return out;
+}
+
+/** Drop a closed tab's text key unless another bucket / window still lists the
+ *  tab (the same tab can be remembered by another workspace's session). */
+function sweepTabText(tabId: string): void {
+  // Nothing about a closed document needs saving any more: drop a debounced
+  // text write that is still queued (otherwise it would land after the sweep
+  // and leave an orphaned key behind).
+  pendingText.delete(tabId);
+  // The bucket write for this close usually lands a tick later (App.vue's
+  // watcher) — check on the next task so the tab is no longer listed there.
+  setTimeout(() => {
+    try {
+      for (const key of bucketKeys()) {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const data = JSON.parse(raw) as StoredBucket;
+        if (data.v !== BUCKET_VERSION) continue;
+        if (data.tabs?.some((t) => t.id === tabId)) return;
+      }
+      localStorage.removeItem(textKey(tabId));
+      writtenText.delete(tabId);
+    } catch {}
+  }, 0);
+}
+
+// A quit / window close / tab discard must not lose the last few hundred ms of
+// text that is still waiting on the debounce.
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  try {
+    window.addEventListener('pagehide', flushTabText);
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flushTabText();
+      });
+    }
+  } catch {}
 }
 
 function loadPersisted(): PersistedState {
@@ -472,6 +656,11 @@ export const useTabsStore = defineStore('tabs', {
         if (key) ws.closePath(key);
       } catch {}
       if (this.tabs.length === 0) this.newTab();
+      // v2 layout — the closed document's text must not linger in storage. The
+      // bucket for THIS window has to lose the tab first, so write the (tiny)
+      // metadata now and let the sweep check every bucket on the next task.
+      this.persist();
+      sweepTabText(id);
     },
     activate(id: string) {
       this.activeId = id;
@@ -610,11 +799,14 @@ export const useTabsStore = defineStore('tabs', {
       if (value) useSettingsStore().ensureRightSidebarVisible();
     },
     persist() {
+      const key = bucketKey(currentWorkspaceFolder());
       try {
-        localStorage.setItem(
-          bucketKey(currentWorkspaceFolder()),
-          JSON.stringify({ tabs: this.tabs, activeId: this.activeId }),
-        );
+        // Metadata only, and skipped when byte-identical to the last write:
+        // clicking through tabs the app already knows about costs nothing.
+        const payload = serializeBucket(this.tabs, this.activeId, false);
+        if (writtenBucket.get(key) === payload) return;
+        localStorage.setItem(key, payload);
+        writtenBucket.set(key, payload);
       } catch {}
     },
     /** #103 — when this is an auxiliary window, record it in the shared
@@ -633,14 +825,16 @@ export const useTabsStore = defineStore('tabs', {
       } catch {}
     },
     /** Write the current view into a specific workspace's bucket (used when
-     *  leaving a workspace, so it's remembered when the user returns). */
+     *  leaving a workspace, so it's remembered when the user returns). This is
+     *  the one path that writes document text eagerly: the workspace being left
+     *  is about to stop being the target of the debounced queue. */
     persistToFolder(folder: string | null) {
       if (!perWorkspaceTabsEnabled()) return this.persist();
+      const key = bucketKey(folder);
       try {
-        localStorage.setItem(
-          bucketKey(folder),
-          JSON.stringify({ tabs: this.tabs, activeId: this.activeId }),
-        );
+        const payload = serializeBucket(this.tabs, this.activeId, true);
+        localStorage.setItem(key, payload);
+        writtenBucket.set(key, payload);
       } catch {}
     },
     /** Called by the workspace store when the active folder changes. Saves

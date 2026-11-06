@@ -520,8 +520,19 @@ function onOutlineGoto(line: number) {
 import { dataThemeFor } from './lib/themes';
 
 // Auto-persist tabs and tiles on every change.
+//
+// The source is a nested array of *references* to the per-tab fields, not a
+// joined string: `map(...).join('|')` copied every open document's text into a
+// fresh string on each run, so with a dozen notes open a single keystroke built
+// (and then compared) megabytes of text before persist() had even started. The
+// array form still tracks exactly the same reactive deps — any tab's content /
+// savedContent / name / path / language, or the active id — and Vue fires the
+// watcher when the getter re-runs, which costs O(tabs) pointer compares.
 watch(
-  () => [tabs.tabs.map((t) => [t.id, t.fileName, t.filePath, t.content, t.savedContent, t.language].join('|')).join(';'), tabs.activeId],
+  () => [
+    tabs.tabs.map((t) => [t.id, t.fileName, t.filePath, t.language, t.content, t.savedContent]),
+    tabs.activeId,
+  ],
   () => {
     tabs.persist();
     tiles.persist();
