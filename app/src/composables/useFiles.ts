@@ -203,6 +203,18 @@ export function useFiles() {
     ...PDF_EXTENSIONS,
   ]);
 
+  // Multi-channel open dedupe ("已打开 xxx" toast stacking): on launch the
+  // same file can arrive through several channels at nearly the same moment —
+  // the `solomd://opened-file` event, the deep-link plugin (onOpenUrl AND
+  // getCurrent initial payload), `drain_pending_opens` and the `?path=`
+  // query param — and macOS `RunEvent::Opened` even delivers it twice from
+  // Rust (PendingOpen push + event emit, runner.rs). Each delivery used to
+  // run the full open flow and stack identical success toasts. Opening the
+  // same path again within this window is treated as one open.
+  const OPEN_DEDUPE_MS = 1500;
+  const recentOpens = new Map<string, number>();
+  const inFlightOpens = new Map<string, Promise<void>>();
+
   // #98 — open an image file as a document tab rendered by ImagePane
   // (zoom/pan viewer), replacing the old fullscreen-only overlay.
   async function openImageFile(path: string) {
@@ -292,6 +304,50 @@ export function useFiles() {
   }
 
   async function openPath(
+    rawPath: string,
+    opts: { bypassNewWindow?: boolean; fromTree?: boolean } = {},
+  ): Promise<void> {
+    // Normalize `file://` BEFORE the dedupe check so the deep-link channel
+    // (raw file URL) and the event/pending channels (plain path) collapse to
+    // the same key.
+    let path = rawPath;
+    if (path.startsWith('file://')) {
+      const stripped = path.replace(/^file:\/\/(localhost)?/, '');
+      try {
+        path = decodeURIComponent(stripped);
+      } catch {
+        path = stripped;
+      }
+    }
+    // Burst dedupe, independent of how long an open takes:
+    //
+    // 1. `inFlightOpens` — a duplicate delivery arriving WHILE the first open
+    //    is still running (big file, slow SAF read) awaits/returns the same
+    //    promise instead of starting a second full open+toast. A pure time
+    //    window failed here: an open slower than the window let the next
+    //    channel's delivery through and stacked the toast again.
+    // 2. `recentOpens` — duplicates arriving shortly AFTER the first open
+    //    finished (e.g. drain_pending_opens running right behind the
+    //    opened-file event) are dropped too.
+    const inFlight = inFlightOpens.get(path);
+    if (inFlight) return inFlight;
+    const lastOpenedAt = recentOpens.get(path);
+    if (lastOpenedAt !== undefined && Date.now() - lastOpenedAt < OPEN_DEDUPE_MS) {
+      return;
+    }
+    const run = openPathInner(path, opts)
+      .catch((e) => {
+        console.error('open failed', e);
+      })
+      .finally(() => {
+        inFlightOpens.delete(path);
+        recentOpens.set(path, Date.now());
+      });
+    inFlightOpens.set(path, run);
+    return run;
+  }
+
+  async function openPathInner(
     path: string,
     opts: { bypassNewWindow?: boolean; fromTree?: boolean } = {},
   ) {

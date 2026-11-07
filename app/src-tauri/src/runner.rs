@@ -1028,6 +1028,11 @@ pub fn run_with(initial_file: Option<String>) {
                         Some(url.to_string())
                     };
                     if let Some(p) = path {
+                        // Both delivery paths are intentional: the event
+                        // reaches an already-mounted frontend, PendingOpen
+                        // covers the not-yet-mounted one. App.vue's openPath
+                        // dedupes same-path opens within a short window, so
+                        // the double delivery only ever opens the file once.
                         if let Some(state) = app_handle.try_state::<PendingOpen>() {
                             state.0.lock().unwrap().push(p.clone());
                         }

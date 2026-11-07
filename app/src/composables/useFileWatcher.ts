@@ -5,6 +5,8 @@ import { useTabsStore } from '../stores/tabs';
 import { useSettingsStore } from '../stores/settings';
 import { useWorkspaceStore } from '../stores/workspace';
 import { isSafPath, fromSafPath, safRead, safWrite } from '../lib/saf-fs';
+import { isImageFileName } from '../lib/image-file';
+import { isPdfName } from '../lib/pdf-file';
 import type { FileReadResult } from '../types';
 import {
   decideDiskChange,
@@ -29,6 +31,15 @@ export function useFileWatcher(showDialog: ShowDialog) {
   let revalidating = false;
   let lastRevalidateAt = 0;
   const REVALIDATE_THROTTLE_MS = 1500;
+
+  /** Image / PDF tabs are read-only binary viewers: their tab text is an
+   *  empty string that never matches a text read of the file, so any
+   *  text-based dirty/conflict comparison would flag them changed. Both
+   *  panes read the bytes straight from disk, so the watcher has nothing
+   *  to do for them. */
+  function isBinaryViewerPath(p: string | undefined | null): boolean {
+    return isImageFileName(p) || isPdfName(p);
+  }
 
   async function syncWatchedPaths() {
     const currentPaths = new Set<string>();
@@ -133,6 +144,9 @@ export function useFileWatcher(showDialog: ShowDialog) {
   async function handleFileChanged(filePath: string) {
     const matching = tabs.tabs.filter((t) => t.filePath === filePath);
     if (matching.length === 0) return;
+    // Binary viewer tabs (image / PDF) never go through the text conflict
+    // flow — the empty buffer would always read as "changed".
+    if (isBinaryViewerPath(filePath)) return;
 
     // If a dialog is already pending for this path, skip
     if (pendingPaths.has(filePath)) return;
@@ -221,6 +235,7 @@ export function useFileWatcher(showDialog: ShowDialog) {
         ...new Set(tabs.tabs.map((t) => t.filePath).filter(Boolean) as string[]),
       ];
       for (const filePath of paths) {
+        if (isBinaryViewerPath(filePath)) continue;
         if (pendingPaths.has(filePath)) continue;
         const matching = tabs.tabs.filter((t) => t.filePath === filePath);
         if (!matching.length) continue;
