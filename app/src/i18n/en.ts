@@ -170,6 +170,7 @@ export const en = {
     back: "Back",
     showSidebar: "Show sidebar",
     hideSidebar: "Hide sidebar",
+    dropHint: "Drop a file here and release to open it",
     palette: "Command palette",
     settings: "Settings…",
     openExternal: "Open in default app",

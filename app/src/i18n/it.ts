@@ -170,6 +170,7 @@ export const it: I18n = {
     back: "Indietro",
     showSidebar: "Mostra barra laterale",
     hideSidebar: "Nascondi barra laterale",
+    dropHint: "Trascina un file qui e rilascia per aprirlo",
     palette: "Palette dei comandi",
     settings: "Impostazioni…",
     openExternal: "Apri con l’app predefinita",

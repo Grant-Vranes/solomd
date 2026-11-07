@@ -170,6 +170,7 @@ export const ja: I18n = {
     back: "戻る",
     showSidebar: "サイドバーを表示",
     hideSidebar: "サイドバーを隠す",
+    dropHint: "ここにファイルをドロップすると開きます",
     palette: "コマンドパレット",
     settings: "設定…",
     openExternal: "既定のアプリで開く",

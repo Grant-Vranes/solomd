@@ -170,6 +170,7 @@ export const uk: I18n = {
     back: "Назад",
     showSidebar: "Показати бічну панель",
     hideSidebar: "Сховати бічну панель",
+    dropHint: "Відпустіть файл тут, щоб відкрити його",
     palette: "Палітра команд",
     settings: "Налаштування…",
     openExternal: "Відкрити в типовій програмі",

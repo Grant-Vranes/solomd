@@ -167,6 +167,11 @@ pomodoro.rehydrate();
 (window as any).usePomodoroStore = usePomodoroStore;
 const { t } = useI18n();
 
+// Header-only file drag-drop state: a drag is in flight, and whether the
+// cursor is currently over the app header (the only valid drop zone).
+const fileDragActive = ref(false);
+const fileDragOverHeader = ref(false);
+
 const cursorLine = ref(1);
 const cursorCol = ref(1);
 // #350 — in preview mode the outline follows the reading position (the
@@ -1603,13 +1608,44 @@ onMounted(async () => {
   // the same action ids through a DOM event — no Tauri round-trip needed.
   window.addEventListener('solomd:menu-action', onDomMenuAction);
 
-  // Drag-drop file open
+  // Drag-drop file open — #header-only drop zone. Files may only be opened
+  // when dropped on the app header (the in-app Toolbar row); a drop anywhere
+  // else in the window is ignored. While a drag is in flight a floating hint
+  // badge invites the user to aim for the header.
   try {
     const webview = getCurrentWebview();
     const IMAGE_DROP_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'tiff']);
+    // The Tauri payload position is in physical pixels; rects are logical.
+    const isOverHeader = (pos?: { x: number; y: number }): boolean => {
+      if (!pos) return false;
+      const scale = window.devicePixelRatio || 1;
+      const x = pos.x / scale;
+      const y = pos.y / scale;
+      // The header is the non-titlebar Toolbar inside .main-col. On Windows a
+      // separate frameless titlebar row sits above it — drops there don't open.
+      const header = document.querySelector<HTMLElement>('.main-col > .toolbar');
+      if (!header) return false;
+      const r = header.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    };
     await webview.onDragDropEvent(async (event) => {
-      if (event.payload.type === 'drop') {
-        for (const path of event.payload.paths) {
+      const { type } = event.payload;
+      if (type === 'enter' || type === 'over') {
+        fileDragActive.value = true;
+        fileDragOverHeader.value = isOverHeader(event.payload.position);
+        return;
+      }
+      if (type === 'leave') {
+        fileDragActive.value = false;
+        fileDragOverHeader.value = false;
+        return;
+      }
+      // drop
+      fileDragActive.value = false;
+      fileDragOverHeader.value = false;
+      // Only drops landing on the header open the file; ignore the rest.
+      if (!isOverHeader(event.payload.position)) return;
+      for (const path of event.payload.paths) {
           const ext = (path.split('.').pop() || '').toLowerCase();
           if (IMAGE_DROP_EXTS.has(ext)) {
             // An image file dropped onto the editor should be inserted, not
@@ -1626,7 +1662,6 @@ onMounted(async () => {
           }
           // Drop targets this window explicitly — bypass new-window routing.
           await files.openPath(path, { bypassNewWindow: true });
-        }
       }
     });
   } catch (e) {
@@ -2376,12 +2411,25 @@ watchEffect(() => { void settings.aiEnabled; void settings.aiProvider; refreshAi
           @filter-tag="onFilterTag"
         />
         <div v-show="!isNarrow || phone.view === 'editor'" class="main-col">
+      <!-- Header-only drop zone: highlighted while a file drag is in flight;
+           highlighted harder when the cursor is over it. -->
       <Toolbar
+        :class="{ 'drop-zone-armed': fileDragActive, 'drop-zone-hover': fileDragOverHeader }"
         @open-palette="paletteOpen = true"
         @open-settings="openSettingsAt()"
         @open-help="helpOpen = true"
         @open-search="toggleGlobalSearch()"
       />
+      <!-- In-header drop-zone tip: shown while a file drag is in flight.
+           The header is the only place a drop opens the file. -->
+      <div
+        v-if="fileDragActive"
+        class="file-drop-tip"
+        :class="{ 'file-drop-tip--active': fileDragOverHeader }"
+        aria-live="polite"
+      >
+        {{ t('header.dropHint') }}
+      </div>
       <TelemetryBanner />
       <div class="workspace">
         <aside
@@ -2781,6 +2829,7 @@ watchEffect(() => { void settings.aiEnabled; void settings.aiProvider; refreshAi
   min-height: 0;
 }
 .main-col {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -3093,6 +3142,40 @@ watchEffect(() => { void settings.aiEnabled; void settings.aiProvider; refreshAi
   font-variant-numeric: tabular-nums;
   pointer-events: none;
   user-select: none;
+}
+/* Tip laid over the header drop zone itself (inset: 0 → covers the 52px
+   toolbar row at the top of .main-col). */
+.file-drop-tip {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: var(--header-h, 52px);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  user-select: none;
+  color: var(--text-secondary, var(--text));
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+}
+.file-drop-tip--active {
+  color: var(--accent, var(--text));
+  background: color-mix(in srgb, var(--accent, #4c8dff) 12%, transparent);
+}
+/* Drag-over highlight for the header drop zone. Scoped styles reach the
+   Toolbar root because Vue stamps the parent scope id on a child's root. */
+.toolbar.drop-zone-armed {
+  outline: 2px dashed color-mix(in srgb, var(--accent, #4c8dff) 65%, transparent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent, #4c8dff) 8%, transparent);
+  transition: outline-color 0.15s ease, background-color 0.15s ease;
+}
+.toolbar.drop-zone-hover {
+  outline-color: var(--accent, #4c8dff);
+  background: color-mix(in srgb, var(--accent, #4c8dff) 16%, transparent);
 }
 .zoom-hud-fade-enter-active,
 .zoom-hud-fade-leave-active {

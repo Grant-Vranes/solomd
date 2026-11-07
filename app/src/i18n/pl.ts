@@ -170,6 +170,7 @@ export const pl: I18n = {
     back: "Wstecz",
     showSidebar: "Pokaż pasek boczny",
     hideSidebar: "Ukryj pasek boczny",
+    dropHint: "Upuść plik tutaj, aby go otworzyć",
     palette: "Paleta poleceń",
     settings: "Ustawienia…",
     openExternal: "Otwórz w domyślnej aplikacji",

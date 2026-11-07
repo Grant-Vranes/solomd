@@ -170,6 +170,7 @@ export const tr: I18n = {
     back: "Geri",
     showSidebar: "Kenar çubuğunu göster",
     hideSidebar: "Kenar çubuğunu gizle",
+    dropHint: "Açmak için dosyayı buraya bırakın",
     palette: "Komut paleti",
     settings: "Ayarlar…",
     openExternal: "Varsayılan uygulamada aç",

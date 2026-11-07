@@ -170,6 +170,7 @@ export const ko: I18n = {
     back: "뒤로",
     showSidebar: "사이드바 표시",
     hideSidebar: "사이드바 숨기기",
+    dropHint: "여기에 파일을 놓으면 열립니다",
     palette: "명령 팔레트",
     settings: "설정…",
     openExternal: "기본 앱으로 열기",

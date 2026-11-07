@@ -170,6 +170,7 @@ export const de: I18n = {
     back: "Zurück",
     showSidebar: "Seitenleiste einblenden",
     hideSidebar: "Seitenleiste ausblenden",
+    dropHint: "Datei hier ablegen und loslassen, um sie zu öffnen",
     palette: "Befehlspalette",
     settings: "Einstellungen…",
     openExternal: "Mit Standard-App öffnen",

@@ -171,6 +171,7 @@ export const zh: I18n = {
     back: "返回",
     showSidebar: "显示侧栏",
     hideSidebar: "隐藏侧栏",
+    dropHint: "将文件拖动至此，松开以打开文件",
     palette: "命令面板",
     settings: "设置…",
     openExternal: "用默认应用打开",

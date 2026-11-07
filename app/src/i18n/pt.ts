@@ -172,6 +172,7 @@ export const pt: I18n = {
     back: "Voltar",
     showSidebar: "Mostrar barra lateral",
     hideSidebar: "Ocultar barra lateral",
+    dropHint: "Solte um arquivo aqui para abri-lo",
     palette: "Paleta de comandos",
     settings: "Configurações…",
     openExternal: "Abrir no app padrão",

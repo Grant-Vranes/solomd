@@ -170,6 +170,7 @@ export const nl: I18n = {
     back: "Terug",
     showSidebar: "Zijbalk tonen",
     hideSidebar: "Zijbalk verbergen",
+    dropHint: "Sleep een bestand hierheen en laat los om het te openen",
     palette: "Opdrachtpalet",
     settings: "Instellingen…",
     openExternal: "Openen met standaardapp",

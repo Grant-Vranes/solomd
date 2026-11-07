@@ -170,6 +170,7 @@ export const sv: I18n = {
     back: "Tillbaka",
     showSidebar: "Visa sidofält",
     hideSidebar: "Dölj sidofält",
+    dropHint: "Släpp en fil här för att öppna den",
     palette: "Kommandopalett",
     settings: "Inställningar…",
     openExternal: "Öppna i standardappen",
