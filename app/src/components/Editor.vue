@@ -14,7 +14,7 @@ import { parseInsertSnippet } from '../lib/insert-snippet';
 // The grammar imports and the `codeLanguages` list they feed now live in
 // `lib/code-languages.ts`: the ``` fence-language picker (#297) derives its
 // catalogue from that same list, so there is only one copy to keep in sync.
-import { codeLanguages } from '../lib/code-languages';
+import { codeLanguages, loadLanguageForFileName } from '../lib/code-languages';
 import { fenceLanguageComplete, fenceLanguageExtension } from '../lib/cm-fence-completion';
 import { filterFenceLanguages, isInsideFenceBefore, matchFenceOpener } from '../lib/fence-languages';
 import { vim, Vim } from '@replit/codemirror-vim';
@@ -224,6 +224,20 @@ let contentSyncTimer: ReturnType<typeof setTimeout> | null = null;
 
 const themeCompartment = new Compartment();
 const langCompartment = new Compartment();
+
+// Plain-text tabs (`.sh`, `.py`, `Dockerfile`, …) get a grammar by file name,
+// loaded asynchronously so a failed/slow import never blocks opening the file.
+// The seq counter invalidates stale loads across tab switches.
+let plainLanguageSeq = 0;
+async function applyPlainLanguage() {
+  const seq = ++plainLanguageSeq;
+  const tab = props.tab;
+  if (tab.language === 'markdown') return;
+  const lang = await loadLanguageForFileName(tab.fileName);
+  // Tab switched (or turned markdown) while the grammar was loading — drop it.
+  if (seq !== plainLanguageSeq || !view || props.tab !== tab || props.tab.language === 'markdown') return;
+  view.dispatch({ effects: langCompartment.reconfigure(lang ? [lang] : []) });
+}
 const wrapCompartment = new Compartment();
 const lineNumCompartment = new Compartment();
 const cursorCompartment = new Compartment();
@@ -1154,12 +1168,12 @@ function plainLineHeightPx(): number {
   const editor = plainLiveEnabled.value
     ? plainBlockEditors.value[plainActiveBlock.value]
     : plainEditor.value;
-  if (!editor) return Math.max(16, (settings.fontSize || 16) * 1.8);
+  if (!editor) return Math.max(16, (settings.fontSize || 16) * 1.6);
   const style = window.getComputedStyle(editor);
   const n = Number.parseFloat(style.lineHeight);
   if (Number.isFinite(n) && n > 0) return n;
   const fs = Number.parseFloat(style.fontSize);
-  return Number.isFinite(fs) && fs > 0 ? fs * 1.8 : 29;
+  return Number.isFinite(fs) && fs > 0 ? fs * 1.6 : 26;
 }
 
 function plainSelectionText(): string {
@@ -2977,7 +2991,7 @@ function estimatePlainBlockCaretFromClick(index: number, event: MouseEvent): num
   if (lines.length <= 1) return 0;
   const rect = render.getBoundingClientRect();
   const style = window.getComputedStyle(render);
-  const lineHeight = Number.parseFloat(style.lineHeight) || (Number.parseFloat(style.fontSize) || 16) * 1.8;
+  const lineHeight = Number.parseFloat(style.lineHeight) || (Number.parseFloat(style.fontSize) || 16) * 1.6;
   const lineIndex = Math.max(0, Math.min(lines.length - 1, Math.floor((event.clientY - rect.top) / lineHeight)));
   let caret = 0;
   for (let i = 0; i < lineIndex; i++) caret += lines[i].length + 1;
@@ -4326,9 +4340,9 @@ function richExtensionsFor(tab: Tab) {
 const fontSizeTheme = (px: number, family: string) =>
   EditorView.theme({
     '&': { fontSize: `${px}px`, height: '100%' },
-    // 5.0 §5 — body 16/1.8 (the size is the user's; 1.8 is CJK-comfortable),
+    // 5.0 §5 — body 16/1.6 (the size is the user's; tuned tighter than the old 1.8),
     // 20px above the first line (#435, #440), room to scroll the last line up to the eye.
-    '.cm-scroller': { fontFamily: buildEditorFontStack(family), lineHeight: '1.8' },
+    '.cm-scroller': { fontFamily: buildEditorFontStack(family), lineHeight: '1.6' },
     '.cm-content': { padding: '20px 32px 30vh', caretColor: 'var(--accent)' },
     '.cm-gutters': {
       backgroundColor: 'transparent',
@@ -4596,6 +4610,8 @@ function reconfigureCompartments() {
     lineNumCompartment.reconfigure(settings.showLineNumbers ? lineNumbers() : []),
     wrapCompartment.reconfigure(settings.wordWrap ? EditorView.lineWrapping : []),
     langCompartment.reconfigure(props.tab.language === 'markdown' ? [markdownExt()] : []),
+    // plain-text grammars resolve async — applyPlainLanguage() below upgrades
+    // this to the file's language once loaded.
     richCompartment.reconfigure(richExtensionsFor(props.tab)),
     themeCompartment.reconfigure(cmThemeFor(settings.theme, !!settings.customCssPath)),
     vimCompartment.reconfigure(settings.vimMode ? vim() : []),
@@ -4610,6 +4626,7 @@ function reconfigureCompartments() {
     effects.push(slashCompartment.reconfigure(slashExt()));
   }
   view.dispatch({ effects });
+  if (props.tab.language !== 'markdown') void applyPlainLanguage();
 }
 
 function maybeRestoreSession() {
@@ -4713,6 +4730,8 @@ onMounted(() => {
     parent: host.value,
   });
   maybeRestoreSession();
+  // Plain-text file types (.py, .sh, Dockerfile, …) load their grammar async.
+  void applyPlainLanguage();
   if (!isMobile()) {
     focusFreshCodeMirror();
   }
@@ -5888,15 +5907,16 @@ watch(
 );
 
 watch(
-  () => props.tab.language,
-  (l) => {
+  [() => props.tab.language, () => props.tab.fileName],
+  ([l]) => {
     view?.dispatch({
       effects: [
         langCompartment.reconfigure(l === 'markdown' ? [markdownExt()] : []),
         richCompartment.reconfigure(richExtensionsFor(props.tab)),
       ],
     });
-  }
+    if (l !== 'markdown') void applyPlainLanguage();
+  },
 );
 
 watch(
@@ -6866,7 +6886,7 @@ const cls = computed(() => ({
   caret-color: var(--accent);
   font-family: var(--plain-editor-font-family, var(--font-editor, var(--font-ui)));
   font-size: var(--plain-editor-font-size, 16px);
-  line-height: 1.8;
+  line-height: 1.6;
   tab-size: 2;
   white-space: pre;
   overflow: auto;
@@ -6928,7 +6948,7 @@ const cls = computed(() => ({
   color: var(--text-faint, #999);
   font-family: var(--plain-editor-font-family, var(--font-editor, var(--font-ui)));
   font-size: var(--plain-editor-font-size, 16px);
-  line-height: 1.8;
+  line-height: 1.6;
   text-align: right;
   user-select: none;
 }
@@ -6943,11 +6963,11 @@ const cls = computed(() => ({
   box-sizing: border-box;
   font-family: var(--plain-editor-font-family, var(--font-editor, var(--font-ui)));
   font-size: var(--plain-editor-font-size, 16px);
-  line-height: 1.8;
+  line-height: 1.6;
 }
 .plain-block {
   position: relative;
-  min-height: 1.8em;
+  min-height: 1.6em;
   padding: 1px 0;
 }
 .plain-block--active {
@@ -7016,7 +7036,7 @@ const cls = computed(() => ({
 .plain-block__textarea {
   display: block;
   width: 100%;
-  min-height: 1.8em;
+  min-height: 1.6em;
   resize: none;
   border: 0;
   outline: none;
@@ -7030,8 +7050,8 @@ const cls = computed(() => ({
   /* #366 — same line pitch as the rendered block (.plain-block__render), so a
      paragraph keeps its height when clicked into. At the inherited 1.6 every
      line shrank by 1.4px on activation: a 24-line block jumped ~34px.
-     5.0: both at the editor's 1.8. */
-  line-height: 1.8;
+     5.0: both at the editor's 1.6. */
+  line-height: 1.6;
   tab-size: 2;
   white-space: pre;
 }
@@ -7056,7 +7076,7 @@ const cls = computed(() => ({
      to the old values for safety. */
   font-family: var(--plain-editor-font-family, var(--font-ui));
   font-size: var(--plain-editor-font-size, 16px);
-  line-height: 1.8;
+  line-height: 1.6;
   padding: 0.05em 0;
 }
 .plain-block__render :deep(h1),
