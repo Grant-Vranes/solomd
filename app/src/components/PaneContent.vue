@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount, type Ref } from 'vue';
 import Editor from './Editor.vue';
 import Preview from './Preview.vue';
 import ExcalidrawPane from './ExcalidrawPane.vue';
@@ -51,6 +51,56 @@ const previewRef = ref<InstanceType<typeof Preview> | null>(null);
 const isExcalidrawTab = computed(() => isExcalidrawName(props.tab?.fileName) || isExcalidrawName(props.tab?.filePath));
 
 const isDrawioTab = computed(() => isDrawioName(props.tab?.fileName) || isDrawioName(props.tab?.filePath));
+
+// #drawio-reload — the diagrams.net embed iframe takes seconds to boot, so a
+// plain `v-if` (unmount on switch away, remount on switch back) forced a full
+// reload every time the user tabbed away from a .drawio file and back.
+// Same story for ExcalidrawPane: remounting re-inits the React root, the
+// fonts and the scene restore on every switch (1-2s each time).
+// Instead: recently visited drawio AND excalidraw tabs stay mounted, hidden
+// with `v-show` while another tab is active. The panes read their content
+// from the tabs store by tabId, so parallel instances don't interfere.
+//
+// The caches are LRU-capped (MAX_CACHED_DIAGRAM_TABS each): a hidden
+// diagrams.net iframe or React excalidraw board still consumes memory/CPU
+// while invisible, so with many diagram tabs open the WHOLE app — including
+// plain markdown switches — got sluggish. The least-recently-used pane is
+// destroyed when the cap is exceeded; revisiting it pays the boot cost once
+// instead of taxing every other tab switch.
+const MAX_CACHED_DIAGRAM_TABS = 3;
+const visitedDrawioTabs = ref<string[]>([]);
+const visitedExcalidrawTabs = ref<string[]>([]);
+
+// Move `id` to the most-recently-used end of the LRU array, evicting the
+// oldest entry beyond the cap. The active tab is always touched last, so the
+// visible pane is never the one evicted.
+function lruTouch(arr: Ref<string[]>, id: string) {
+  const i = arr.value.indexOf(id);
+  if (i >= 0 && i === arr.value.length - 1) return;
+  if (i >= 0) arr.value.splice(i, 1);
+  arr.value.push(id);
+  while (arr.value.length > MAX_CACHED_DIAGRAM_TABS) arr.value.shift();
+}
+
+watch(
+  [() => props.tab?.id, () => tabs.tabs.map((x) => x.id).join('\u0000')],
+  ([id]) => {
+    // Prune cached panes whose tab closed (or was replaced by a reopened
+    // file with a fresh id) so dead iframes / React roots don't accumulate.
+    const open = new Set(tabs.tabs.map((x) => x.id));
+    visitedDrawioTabs.value = visitedDrawioTabs.value.filter((x) => open.has(x));
+    visitedExcalidrawTabs.value = visitedExcalidrawTabs.value.filter((x) => open.has(x));
+    if (!id) return;
+    const t = tabs.tabs.find((x) => x.id === id);
+    if (!t) return;
+    const name = t.fileName || t.filePath || '';
+    if (isDrawioName(name)) lruTouch(visitedDrawioTabs, id);
+    else if (isExcalidrawName(name)) lruTouch(visitedExcalidrawTabs, id);
+  },
+  { immediate: true },
+);
+const cachedDrawioTabs = computed(() => visitedDrawioTabs.value);
+const cachedExcalidrawTabs = computed(() => visitedExcalidrawTabs.value);
 
 // HTML document tabs (like horseMD): render in a sandboxed iframe by default,
 // toggleable to raw source via the button in the pane's top-right corner.
@@ -792,14 +842,43 @@ function onPreviewSearchEvent(e: Event) {
     }"
   >
     <!-- .excalidraw files render as a dedicated excalidraw canvas tab (like
-       horseMD) — the scene JSON is never shown as raw text. -->
-    <div class="pane pane--excalidraw" v-if="isExcalidrawTab && tab">
-      <ExcalidrawPane :key="tab.id" :tab-id="tab.id" />
+       horseMD) — the scene JSON is never shown as raw text. Recently visited
+       excalidraw tabs stay mounted (v-show) so the React board survives tab
+       switches instead of re-mounting on every one. -->
+    <!-- The OUTER container must hide with the holders: `.pane { flex: 1 }`
+         means a mounted-but-empty diagram container still claimed an equal
+         flex share, squeezing the markdown editor to 50% (or ~33% with both
+         kinds cached) beside an invisible blank pane. -->
+    <div
+      class="pane pane--excalidraw"
+      v-if="cachedExcalidrawTabs.length"
+      v-show="isExcalidrawTab"
+    >
+      <div
+        v-for="excalidrawTabId in cachedExcalidrawTabs"
+        :key="excalidrawTabId"
+        v-show="excalidrawTabId === tab?.id"
+        class="pane--diagram__holder"
+      >
+        <ExcalidrawPane :tab-id="excalidrawTabId" />
+      </div>
     </div>
     <!-- .drawio files render as an embedded diagrams.net canvas tab (like
-       horseMD) — the XML is never shown as raw text. -->
-    <div class="pane pane--drawio" v-if="isDrawioTab && tab">
-      <DrawioPane :key="tab.id" :tab-id="tab.id" />
+       horseMD) — the XML is never shown as raw text. Visited drawio tabs stay
+       mounted (v-show) so the embed iframe survives tab switches. -->
+    <div
+      class="pane pane--drawio"
+      v-if="cachedDrawioTabs.length"
+      v-show="isDrawioTab"
+    >
+      <div
+        v-for="drawioTabId in cachedDrawioTabs"
+        :key="drawioTabId"
+        v-show="drawioTabId === tab?.id"
+        class="pane--diagram__holder"
+      >
+        <DrawioPane :tab-id="drawioTabId" />
+      </div>
     </div>
     <!-- Image files render as a zoomable viewer tab (see ImagePane). -->
     <div class="pane pane--image" v-if="isImageTab && tab">
@@ -904,6 +983,20 @@ function onPreviewSearchEvent(e: Event) {
 }
 .pane--drawio {
   display: flex;
+}
+/* Cached drawio/excalidraw tab holders: exactly one per kind is visible at a
+   time (v-show on the active tab); each must fill the pane like the old
+   single-pane layout. */
+.pane--diagram__holder {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+.pane--diagram__holder > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 .pane--image {
   display: flex;

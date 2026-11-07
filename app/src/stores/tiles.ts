@@ -275,8 +275,18 @@ export const useTilesStore = defineStore('tiles', {
       } catch {}
     },
 
-    /** Validate persisted state: ensure all activeTabIds reference existing tabs. */
+    /** Validate persisted state: ensure all activeTabIds reference existing tabs.
+     *
+     * Also recovers from the "phantom empty pane" state (#空窗格): a leaf whose
+     * activeTabId is '' occupies its full split share while displaying nothing,
+     * so the editor looks squeezed into the other half of the window. Empty
+     * leaves are an anomaly — every pane-creating path (split, drag-to-split)
+     * assigns a tab, and a deliberate empty pane cannot be made from the UI —
+     * so they are pruned here: with more than one leaf, an empty pane is
+     * merged away; a lone empty pane (or a tree that prunes to nothing) is
+     * re-pointed at the first open tab. */
     validate(tabs: { id: string }[]) {
+      const tabsStore = useTabsStore();
       const ids = new Set(tabs.map((t) => t.id));
       let changed = false;
       const fix = (node: TileNode): TileNode => {
@@ -290,13 +300,51 @@ export const useTilesStore = defineStore('tiles', {
         return { ...node, children: [fix(node.children[0]), fix(node.children[1])] as [TileNode, TileNode] };
       };
       this.root = fix(this.root);
+
+      if (tabs.length > 0) {
+        // Prune empty leaves, but only while at least one other pane holds a
+        // tab (collect first: a lone empty pane is recovered below, not merged).
+        const leafCount = collectLeaves(this.root).length;
+        if (leafCount > 1 && collectLeaves(this.root).some((l) => !l.activeTabId)) {
+          const prune = (node: TileNode): TileNode | null => {
+            if (node.type === 'leaf') return node.activeTabId ? node : null;
+            const a = prune(node.children[0]);
+            const b = prune(node.children[1]);
+            if (a && b) return { ...node, children: [a, b] as [TileNode, TileNode] };
+            return a ?? b; // one side empty → the surviving side takes its place
+          };
+          const pruned = prune(this.root);
+          if (pruned) {
+            this.root = pruned;
+          } else {
+            // Every pane was empty (e.g. all tabs closed in a split layout):
+            // collapse to a single pane on the first open tab.
+            this.root = { type: 'leaf', id: newPaneId(), activeTabId: tabs[0].id };
+          }
+          changed = true;
+        }
+        // NOTE: a LONE empty pane is deliberately NOT repointed here. A blank
+        // pane with tabs.length > 0 is the legitimate transient state right
+        // after tabs.closeTab() removed the last tab of a split (newTab()
+        // hasn't run yet in that action, and the pane is repointed by the
+        // validate() call that follows it). Repointing here would steal
+        // tabs.activeId and reorder the Ctrl+Tab MRU history. App.vue's
+        // initDefault() fallback covers the startup case.
+      }
+
       // Fix focusedPaneId
       const leafIds = new Set(collectLeaves(this.root).map((l) => l.id));
       if (!leafIds.has(this.focusedPaneId)) {
         this.focusedPaneId = firstLeaf(this.root).id;
         changed = true;
       }
-      if (changed) this.syncActiveTab();
+      // Repair path only: align tabs.activeId without touching the MRU
+      // stack — syncActiveTab() records a visit, which would reorder the
+      // user's Ctrl+Tab history as a side effect of a layout repair.
+      if (changed) {
+        const leaf = findLeaf(this.root, this.focusedPaneId);
+        if (leaf?.activeTabId) tabsStore.activeId = leaf.activeTabId;
+      }
     },
   },
 });

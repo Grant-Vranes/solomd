@@ -656,6 +656,12 @@ export const useTabsStore = defineStore('tabs', {
         if (key) ws.closePath(key);
       } catch {}
       if (this.tabs.length === 0) this.newTab();
+      // Repoint/prune any panes the close left without a tab — otherwise an
+      // empty pane keeps its split share and the editor looks squeezed into
+      // the other half of the window.
+      try {
+        useTilesStore().validate(this.tabs);
+      } catch {}
       // v2 layout — the closed document's text must not linger in storage. The
       // bucket for THIS window has to lose the tab first, so write the (tiny)
       // metadata now and let the sweep check every bucket on the next task.
@@ -894,6 +900,11 @@ export const useTabsStore = defineStore('tabs', {
         tiles.validate(this.tabs);
       } catch {}
       if (this.tabs.length === 0) this.newTab();
+      // newTab() runs after validate above; re-run so panes left empty by the
+      // removals point at the fresh tab instead of staying blank.
+      try {
+        useTilesStore().validate(this.tabs);
+      } catch {}
       this.persist();
     },
   },

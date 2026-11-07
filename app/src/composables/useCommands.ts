@@ -266,6 +266,17 @@ export function useCommands(): Command[] {
     { id: 'tile.closePane', title: 'Close Pane', run: () => tiles.closePane(tiles.focusedPaneId) },
     { id: 'tile.focusNext', title: 'Focus Next Pane', shortcut: kb('tile.focusNext'), run: () => tiles.focusNextPane() },
     { id: 'tile.focusPrev', title: 'Focus Previous Pane', shortcut: kb('tile.focusPrev'), run: () => tiles.focusPrevPane() },
+    // Escape hatch for the "editor squeezed into half the window" state: a
+    // leftover split (or a skewed editor/preview ratio persisted by an older
+    // build) made the content pane occupy only a fraction of the window.
+    // One command collapses everything back to a single full-width pane.
+    { id: 'tile.resetLayout', title: 'Reset Layout (single pane, full width)', hint: 'Collapse all split panes, restore the editor/preview ratio to 50/50 and return to live-edit mode', run: () => {
+      const active = tabs.activeId || tiles.focusedLeaf?.activeTabId || tabs.tabs[0]?.id || '';
+      tiles.initDefault(active);
+      tiles.persist();
+      if (settings.viewMode === 'split' || settings.viewMode === 'preview') settings.setViewMode('liveEdit');
+      settings.setSplitRatio(50);
+    } },
 
     {
       id: 'search.global',

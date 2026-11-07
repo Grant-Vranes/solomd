@@ -262,7 +262,12 @@ async function onTabAction(action: 'close' | 'closeLeft' | 'closeRight' | 'close
 // cursor shows 🚫 and tabs won't move. Pointer events bypass that interception
 // and behave identically on macOS, Windows, and Linux.
 const SPLIT_EDGE = 50; // px from a pane edge that arms drag-to-split
-const DRAG_THRESHOLD = 4; // px of movement before a press counts as a drag
+// px of movement before a press counts as a drag. 4px made a jittery
+// trackpad click count as a drag, and releasing that "drag" within the
+// 50px pane-edge zone silently spawned a split — the reported
+// "editor suddenly squeezed into the left/right half" state. 10px still
+// feels instant for a deliberate drag but ignores hand tremor.
+const DRAG_THRESHOLD = 10;
 
 let pointerStart: { x: number; y: number; tabId: string } | null = null;
 let dragging = false;
