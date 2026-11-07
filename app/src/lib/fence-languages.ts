@@ -74,30 +74,21 @@ const CODE_LANGUAGES: FenceLanguage[] = codeLanguages.map((lang) => {
   };
 });
 
-/** Checked against `highlight.js/lib/common` (36 languages): every name and
- *  alias below resolves there, and `fence-languages.test.ts` keeps it that way
- *  so the picker cannot start promising languages the preview silently
- *  ignores. */
+/** Checked against `highlight.js/lib/common`: every name and alias below
+ *  resolves there, and `fence-languages.test.ts` keeps it that way so the
+ *  picker cannot start promising languages the preview silently ignores.
+ *
+ *  This group used to cover much more (bash, ruby, php, …); those grew
+ *  real grammars in `code-languages.ts` and were moved up, so the editor
+ *  and the preview agree on them now. */
 const PREVIEW_ONLY: Array<[string, string[]]> = [
-  ['bash', ['sh', 'zsh', 'shell']],
-  ['csharp', ['cs']],
-  ['diff', []],
   ['graphql', ['gql']],
-  ['ini', ['toml']],
-  ['kotlin', ['kt']],
   ['less', []],
-  ['lua', []],
   ['makefile', ['make']],
   ['markdown', ['md']],
-  ['objectivec', ['objc']],
-  ['perl', ['pl']],
   ['php', []],
   ['plaintext', ['text', 'txt']],
-  ['r', []],
-  ['ruby', ['rb']],
   ['scss', []],
-  ['swift', []],
-  ['vbnet', ['vb']],
   ['wasm', []],
 ];
 

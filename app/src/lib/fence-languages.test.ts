@@ -41,7 +41,9 @@ test('no row lists its own name as an alias', () => {
 test('the preview-only rows are languages highlight.js really resolves', () => {
   const core = new Set(codeLanguages.map((l) => l.name));
   const extra = FENCE_LANGUAGES.filter((l) => !l.special && !core.has(l.name));
-  assert.ok(extra.length >= 15, 'expected the preview-only group to be present');
+  // Most former members (bash, ruby, php, …) grew real grammars in
+  // `code-languages.ts`; only the preview-only remainder is left here.
+  assert.ok(extra.length >= 5, 'expected the preview-only group to be present');
   for (const lang of extra) {
     assert.ok(hljs.getLanguage(lang.name), `highlight.js cannot render ${lang.name}`);
     for (const alias of lang.aliases) {

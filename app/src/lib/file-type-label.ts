@@ -10,37 +10,20 @@ import { codeLanguages } from './code-languages.ts';
  * "Plain Text" for extension-less files.
  */
 
-/** Extensions the code editor does not highlight but users still open. */
+/** Extensions the code editor still does not highlight but users open.
+ *  Everything the editor *can* highlight is derived from `codeLanguages`
+ *  below, so languages only appear once here when they have no grammar. */
 const EXTRA_EXT_LABELS: Record<string, string> = {
   txt: 'Plain Text',
   text: 'Plain Text',
   log: 'Plain Text',
-  toml: 'TOML',
-  ini: 'INI',
-  cfg: 'INI',
-  conf: 'INI',
   env: 'Dotenv',
-  sh: 'Shell',
-  zsh: 'Shell',
-  bat: 'Batch',
-  ps1: 'PowerShell',
-  diff: 'Diff',
-  patch: 'Diff',
-  graphql: 'GraphQL',
-  gql: 'GraphQL',
   ex: 'Elixir',
   exs: 'Elixir',
-  rb: 'Ruby',
   php: 'PHP',
-  lua: 'Lua',
-  pl: 'Perl',
-  r: 'R',
-  swift: 'Swift',
-  kt: 'Kotlin',
-  scala: 'Scala',
-  dart: 'Dart',
-  vb: 'VB',
-  cs: 'C#',
+  bat: 'Batch',
+  graphql: 'GraphQL',
+  gql: 'GraphQL',
   makefile: 'Makefile',
   csv: 'CSV',
   tsv: 'TSV',
@@ -52,7 +35,7 @@ const EXTRA_EXT_LABELS: Record<string, string> = {
 /** extension → display name, built once from `codeLanguages`. */
 const CODE_EXT_LABELS: Record<string, string> = (() => {
   const map: Record<string, string> = {};
-  const ACRONYMS = new Set(['json', 'xml', 'html', 'css', 'sql', 'go', 'r']);
+  const ACRONYMS = new Set(['json', 'xml', 'html', 'css', 'sql', 'go', 'r', 'vb']);
   const pretty = (name: string) =>
     ACRONYMS.has(name) ? name.toUpperCase()
     : name === 'typescript' ? 'TypeScript'
@@ -60,6 +43,7 @@ const CODE_EXT_LABELS: Record<string, string> = (() => {
     : name === 'objectivec' ? 'Objective-C'
     : name === 'cpp' ? 'C++'
     : name === 'csharp' ? 'C#'
+    : name === 'fsharp' ? 'F#'
     : name[0].toUpperCase() + name.slice(1);
   for (const lang of codeLanguages) {
     const label = pretty(lang.name);

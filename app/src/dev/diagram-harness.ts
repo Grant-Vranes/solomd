@@ -124,7 +124,6 @@ async function runExcalidraw() {
 const messages: unknown[] = [];
 function runDrawio() {
   return new Promise<void>((resolve) => {
-    let ready = false;
     let sawAutosave = false;
     const url = drawioEditorUrl('en');
     result.drawioUrl = url;
@@ -145,7 +144,6 @@ function runDrawio() {
       if (!msg) return;
       messages.push({ event: msg.event ?? msg.action, keys: Object.keys(msg) });
       if (msg.event === 'init') {
-        ready = true;
         result.drawioInit = true;
         dwFrame.contentWindow?.postMessage(
           JSON.stringify({ action: 'load', xml: undefined, autosave: 1 }),
