@@ -45,6 +45,20 @@ const SAVE_FILTERS = [
   { name: 'Plain Text', extensions: ['txt'] },
 ];
 
+// Extension of a path's basename, '' when the file has none. `split('.')`
+// on the whole path returned the FULL PATH for extensionless files (no dot
+// anywhere) and a directory segment for paths like `/tmp/my.dir/file`, so
+// extensionless text files (Makefile, Dockerfile, scripts) were classified
+// as unknown binaries and handed to the OS instead of read as text.
+// Dotfiles (`.bashrc`) count as extensionless too — the leading dot is the
+// hidden-file marker, not an extension separator.
+function extensionOf(path: string): string {
+  const base = path.split(/[\\/]/).pop() ?? '';
+  const dot = base.lastIndexOf('.');
+  // dot > 0 (not >= 0) leaves bare dotfiles like `.bashrc` extensionless
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
+}
+
 // Source path → the unsaved tab its conversion opened (#356). Module-level:
 // every component calls useFiles() for its own instance, and the FileTree's
 // instance must see conversions started from anywhere.
@@ -405,7 +419,7 @@ export function useFiles() {
     // #98 — image files open in the fullscreen overlay viewer, never as a
     // tab and never in a new window (an overlay isn't document content, so
     // routing it through the markitdown converter just toasts an error).
-    const imgExt = (path.split('.').pop() || '').toLowerCase();
+    const imgExt = extensionOf(path);
     if (IMAGE_EXTENSIONS.has(imgExt)) {
       return openImageFile(path);
     }
@@ -428,7 +442,7 @@ export function useFiles() {
       // Window creation failed — fall through to in-tab open.
     }
 
-    const ext = (path.split('.').pop() || '').toLowerCase();
+    const ext = extensionOf(path);
 
     // If it's a convertible format, convert to Markdown first.
     // #356 — except an HTML file clicked in the file tree: that is a text
@@ -536,9 +550,11 @@ export function useFiles() {
     path: string,
     opts: { bypassNewWindow?: boolean } = {},
   ) {
-    const ext = (path.split('.').pop() || '').toLowerCase();
+    const ext = extensionOf(path);
     const isImage = IMAGE_EXTENSIONS.has(ext);
-    const isTextLike = TEXT_LINK_EXTENSIONS.has(ext);
+    // Extensionless files (Makefile, Dockerfile, dotfiles) are treated as
+    // text links — they stay in the editor, same as openPath does.
+    const isTextLike = ext === '' || TEXT_LINK_EXTENSIONS.has(ext);
     const isPdf = PDF_EXTENSIONS.has(ext);
     if (settings.openLinkedFilesExternally && !isImage && !isTextLike && !isPdf) {
       if (import.meta.env.DEV) {

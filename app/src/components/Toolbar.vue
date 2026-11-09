@@ -844,7 +844,14 @@ onBeforeUnmount(() => {
         </div>
       </Teleport>
     </nav>
-    <span class="titlebar__title" aria-hidden="true">{{ activeTabDisplayTitle ? `${activeTabDisplayTitle} — SoloMD` : 'SoloMD' }}</span>
+    <span class="titlebar__title" aria-hidden="true">
+      <!-- File title rendered as a button-style pill so it reads as a
+           distinct affordance, not stray text between menubar and controls. -->
+      <span
+        class="titlebar__title-pill"
+        :class="{ 'titlebar__title-pill--empty': !activeTabDisplayTitle }"
+      >{{ activeTabDisplayTitle ? activeTabDisplayTitle : 'SoloMD' }}</span>
+    </span>
     <div class="win-controls" data-no-drag>
       <button class="win-controls__btn" @click="winMinimize" :title="t('menubar.minimize')" tabindex="-1">
         <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 5h10" stroke="currentColor" stroke-width="1" /></svg>
@@ -1562,15 +1569,35 @@ onBeforeUnmount(() => {
 .titlebar__title {
   flex: 1 1 0;
   min-width: 0;
-  padding: 0 12px;
-  line-height: 32px;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* Button-style pill for the open-file title — visually distinct from plain
+   header text, matching the menubar buttons' rounded affordance. */
+.titlebar__title-pill {
+  max-width: 100%;
+  padding: 0 14px;
+  height: 24px;
+  line-height: 24px;
+  border-radius: 999px;
+  background: var(--fill-1);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 12px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+/* No file open — keep the bordered pill, just tone it down. */
+.titlebar__title-pill--empty {
+  background: transparent;
   color: var(--text-3);
-  pointer-events: none;
+  font-weight: 400;
 }
 .menubar {
   display: flex;

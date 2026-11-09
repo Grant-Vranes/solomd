@@ -922,6 +922,18 @@ onBeforeUnmount(() => {
   opacity: 0.5;
 }
 
+/* In the window header (`placement="header"`) every open-file tab gets an
+   outer border: it reads as a button/pill, visually distinct from the bare
+   text of the surrounding drag region. The active tab keeps the same border
+   but a filled background, so state is still obvious. */
+.pane-tabbar--header .tab {
+  border: 1px solid var(--border);
+  padding: 0 5px 0 11px; /* compensate for the added 1px border */
+}
+.pane-tabbar--header .tab--active {
+  border-color: color-mix(in srgb, var(--text-3) 55%, transparent);
+}
+
 .tab__name {
   overflow: hidden;
   text-overflow: ellipsis;
