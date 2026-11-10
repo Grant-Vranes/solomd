@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod linux_a11y;
+mod linux_render;
 mod runner;
 mod windows_install_migration;
 
@@ -45,17 +46,14 @@ fn main() {
     // shortcuts. Taskbar pins and icon caches use this identity across upgrades.
     set_windows_app_user_model_id();
 
-    // Linux (#158): webkit2gtk 2.42+ uses a DMABUF renderer that fails to
-    // obtain an EGL display on some GPU / Mesa combinations (e.g. Intel on
-    // older ThinkPads), aborting at launch with
-    //   "Could not create default EGL display: EGL_BAD_PARAMETER. Aborting..."
-    // before any window appears. Disabling the DMABUF renderer falls back to a
-    // working GL path and is the upstream-recommended workaround. Set it before
-    // webkit initialises, and only when the user hasn't chosen their own value.
+    // Linux (#158): whether to pin WEBKIT_DISABLE_DMABUF_RENDERER is one
+    // documented, unit-tested decision in linux_render.rs. Short version:
+    // the user's own value of the variable always wins; we only set it on
+    // webkit2gtk < 2.44, the runtimes whose DMABUF renderer can still abort
+    // at launch on some Mesa stacks. Everywhere else DMABUF stays enabled so
+    // scrolling keeps its hardware-accelerated, vsync'd path.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-    }
+    linux_render::apply_dmabuf_renderer_policy();
 
     // Linux (#253): a wedged accessibility bus makes GTK and WebKit each block
     // the UI thread for their full D-Bus timeout before the window can appear.

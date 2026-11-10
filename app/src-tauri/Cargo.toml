@@ -230,6 +230,12 @@ ndk-context = "0.1"
 # tree via tauri's GTK stack; we only name it so we can call GDBus directly.
 [target.'cfg(target_os = "linux")'.dependencies]
 gio = "0.18"
+# Version probe for the #158 EGL workaround in src/linux_render.rs: only disable the
+# DMABUF renderer on webkit2gtk < 2.44 (older runtimes abort at launch on
+# some Mesa stacks; newer ones fall back to a working EGL display and keep
+# hardware-accelerated, smooth scrolling). Same crate tauri/wry already
+# compile, so this costs nothing extra.
+webkit2gtk = "2"
 
 [dev-dependencies]
 tempfile = "3"
