@@ -1440,8 +1440,8 @@ onBeforeUnmount(() => {
     height: 40px;
   }
   .seg__btn {
-    height: 32px;
-    padding: 0 14px;
+    height: 30px;
+    padding: 0 12px;
   }
 }
 /* ── Phone nav bar (5.0 §8) ──────────────────────────────────────────── */
@@ -1490,9 +1490,9 @@ onBeforeUnmount(() => {
 .seg {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(4, minmax(44px, 1fr));
+  grid-template-columns: repeat(4, minmax(36px, auto));
   grid-auto-columns: 1fr;
-  padding: 3px;
+  padding: 2px;
   gap: 0;
   border-radius: var(--r-md);
   background: var(--fill-1);
@@ -1501,10 +1501,10 @@ onBeforeUnmount(() => {
 }
 .seg__thumb {
   position: absolute;
-  top: 3px;
-  bottom: 3px;
-  left: 3px;
-  width: calc((100% - 6px) / 4);
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc((100% - 4px) / 4);
   border-radius: var(--r-sm);
   background: var(--bg);
   box-shadow: var(--sh-thumb);
@@ -1520,9 +1520,9 @@ onBeforeUnmount(() => {
 .seg__btn {
   position: relative;
   z-index: 1;
-  height: 26px;
+  height: 24px;
   min-width: 0;
-  padding: 0 12px;
+  padding: 0 9px;
   border: 0;
   background: transparent;
   font: inherit;
