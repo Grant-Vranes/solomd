@@ -63,6 +63,7 @@ pub fn apply_dmabuf_renderer_policy() {
     if decision == DmabufDecision::SetDisable {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
+}
 
 #[cfg(not(target_os = "linux"))]
 pub fn apply_dmabuf_renderer_policy() {}

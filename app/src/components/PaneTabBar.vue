@@ -934,8 +934,14 @@ onBeforeUnmount(() => {
   border-color: var(--text-2);
 }
 .pane-tabbar--header .tab--active {
-  border-color: var(--text);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.1);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--fill-2));
+  color: var(--text);
+  font-weight: 620;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.12);
+}
+.pane-tabbar--header .tab--active:hover {
+  background: color-mix(in srgb, var(--accent) 20%, var(--fill-2));
 }
 
 .tab__name {
