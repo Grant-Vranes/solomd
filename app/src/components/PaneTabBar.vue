@@ -927,11 +927,15 @@ onBeforeUnmount(() => {
    text of the surrounding drag region. The active tab keeps the same border
    but a filled background, so state is still obvious. */
 .pane-tabbar--header .tab {
-  border: 1px solid var(--border);
+  border: 1px solid var(--text-3);
   padding: 0 5px 0 11px; /* compensate for the added 1px border */
 }
+.pane-tabbar--header .tab:hover {
+  border-color: var(--text-2);
+}
 .pane-tabbar--header .tab--active {
-  border-color: color-mix(in srgb, var(--text-3) 55%, transparent);
+  border-color: var(--text);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.1);
 }
 
 .tab__name {
