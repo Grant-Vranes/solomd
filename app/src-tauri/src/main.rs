@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod linux_a11y;
+// Linux-only workaround (#158); compiled nowhere else so dead code can't warn.
+#[cfg(any(target_os = "linux", test))]
 mod linux_render;
 mod runner;
 mod windows_install_migration;
