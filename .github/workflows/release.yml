@@ -15,6 +15,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  checksums:
+    # 等全部 4 个平台构建完成后，用 scripts/checksums.sh 生成 SHA256SUMS.txt
+    # 并上传到草稿 Release（Release body 里承诺了这个校验文件）。
+    # 仅 tag 触发时运行；workflow_dispatch 没有有效 tag，跳过。
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    name: Upload SHA256SUMS
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Generate and upload SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/checksums.sh "${{ github.ref_name }}"
+
   build:
     strategy:
       fail-fast: false
@@ -43,12 +59,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -76,17 +94,12 @@ jobs:
             libxdo-dev \
             patchelf
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            app/src-tauri/target
-            mcp-server/target
-          key: ${{ matrix.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ matrix.os }}-${{ matrix.target }}-cargo-
+          workspaces: |
+            app/src-tauri
+            mcp-server
 
       - name: Install frontend dependencies
         working-directory: app
@@ -105,7 +118,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: app
-          tagName: ${{ github.ref_name }}
+          # workflow_dispatch 时 ref_name 是分支名，不能当 tag 用；
+          # 传空串让 tauri-action 不去创建 Release（产物仍在 draft 里可手动补）。
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
           releaseName: 'SoloMD ${{ github.ref_name }}'
           releaseBody: |
             ## SoloMD ${{ github.ref_name }}
