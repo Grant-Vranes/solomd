@@ -56,17 +56,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # pnpm 必须先装：setup-node 的 cache: pnpm 需要找到 pnpm 可执行文件才能算缓存 key
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: app/pnpm-lock.yaml
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
