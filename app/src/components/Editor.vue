@@ -176,6 +176,10 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: 'cursor', line: number, col: number): void;
   (e: 'selection', text: string): void;
+  // #outline-sync — 1-indexed line at the top of the editor viewport, emitted
+  // on scroll so the outline highlight can follow the reading position instead
+  // of the (stationary) cursor while the user scrolls.
+  (e: 'topline', line: number): void;
 }>();
 
 const tabs = useTabsStore();
@@ -639,8 +643,25 @@ function schedulePlainGutter() {
   }, 120);
 }
 
+// #outline-sync — the outline highlight follows the reading position, so the
+// editor reports its top visible line on every scroll frame (rAF-throttled —
+// `getViewLine` walks measured line tops and would be too hot per scroll event).
+let toplineRaf = 0;
+function emitThrottledTopline() {
+  if (toplineRaf) return;
+  toplineRaf = requestAnimationFrame(() => {
+    toplineRaf = 0;
+    const line = getViewLine();
+    if (line != null && line >= 1) emit('topline', Math.floor(line));
+  });
+}
+onBeforeUnmount(() => {
+  if (toplineRaf) cancelAnimationFrame(toplineRaf);
+});
+
 function onPlainScroll(event: Event) {
   plainScrollTop.value = (event.target as HTMLTextAreaElement).scrollTop;
+  emitThrottledTopline();
   // The shade and the drawn caret are positioned against the container, not
   // the scrolled text, so they have to follow the textarea's own scrolling.
   schedulePlainOverlays();
@@ -4516,6 +4537,14 @@ function buildExtensions() {
         return false;
       },
     }),
+    EditorView.domEventHandlers({
+      // #outline-sync — keep the outline highlight in step with the scrolled
+      // position, not the stationary cursor.
+      scroll: () => {
+        emitThrottledTopline();
+        return false;
+      },
+    }),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) {
         if (u.transactions.some((tr) => tr.isUserEvent('undo'))) {
@@ -6461,6 +6490,7 @@ const cls = computed(() => ({
     <div
       v-if="plainLiveEnabled"
       ref="plainLiveHost"
+      @scroll="emitThrottledTopline"
       :class="[
         cls,
         'plain-block-editor',

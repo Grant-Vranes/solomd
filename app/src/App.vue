@@ -183,11 +183,30 @@ window.addEventListener('solomd:preview-topline', (e: Event) => {
   if (paneId && paneId !== tiles.focusedPaneId) return;
   if (typeof line === 'number' && line > 0) previewTopLine.value = line;
 });
+// #outline-sync — edit mode: the editor's scrolled top line drives the outline
+// highlight while the cursor stays put (mirrors preview-topline above).
+const editorTopLine = ref<number | null>(null);
+window.addEventListener('solomd:editor-topline', (e: Event) => {
+  const { line, paneId } = (e as CustomEvent).detail || {};
+  if (paneId && paneId !== tiles.focusedPaneId) return;
+  if (typeof line === 'number' && line > 0) editorTopLine.value = line;
+});
 const outlineLine = computed(() =>
   settings.viewMode === 'preview' && previewTopLine.value != null
     ? previewTopLine.value
-    : cursorLine.value,
+    : settings.viewMode === 'edit' && editorTopLine.value != null
+      ? editorTopLine.value
+      : cursorLine.value,
 );
+// Leaving edit mode (or switching view modes) drops the stale scroll position
+// so the outline falls back to the cursor until the next scroll reports.
+watch(() => settings.viewMode, () => {
+  editorTopLine.value = null;
+});
+// Switching documents also invalidates the remembered scroll line.
+watch(() => tabs.activeId, () => {
+  editorTopLine.value = null;
+});
 // v4.3.0 issue #70: selection text from the editor, surfaced in StatusBar
 // as "selected: N words / M chars". Empty string when nothing is selected.
 const selectionText = ref('');

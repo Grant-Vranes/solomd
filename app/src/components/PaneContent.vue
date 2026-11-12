@@ -750,6 +750,17 @@ function onPreviewTopline(line: number) {
   }));
 }
 
+// #outline-sync — edit mode mirrors #350: the editor reports its scrolled
+// reading position so the outline follows the viewport, not the stationary
+// cursor. Only meaningful in pure edit mode; split mode keeps the cursor as
+// the source of truth (its panes are scroll-synced anyway).
+function onEditorTopline(line: number) {
+  if (settings.viewMode !== 'edit') return;
+  window.dispatchEvent(new CustomEvent('solomd:editor-topline', {
+    detail: { line, paneId: props.paneId },
+  }));
+}
+
 function onOutlineGotoEvent(e: Event) {
   const { line, paneId } = (e as CustomEvent).detail;
   if (paneId !== props.paneId) return;
@@ -920,6 +931,7 @@ function onPreviewSearchEvent(e: Event) {
         :spell-check="settings.spellCheck"
         @cursor="onCursor"
         @selection="onSelection"
+        @topline="onEditorTopline"
       />
     </div>
     <div class="pane pane--editor" v-if="tab" v-show="showEditor" :style="editorPaneStyle">
@@ -932,6 +944,7 @@ function onPreviewSearchEvent(e: Event) {
         :spell-check="settings.spellCheck"
         @cursor="onCursor"
         @selection="onSelection"
+        @topline="onEditorTopline"
       />
     </div>
     <!-- #367 — draggable divider between editor and preview. -->
